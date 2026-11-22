@@ -1,5 +1,21 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function fullAdminRights() {
+  return {
+    can_manage_chat: true,
+    can_delete_messages: true,
+    can_manage_video_chats: true,
+    can_restrict_members: true,
+    can_promote_members: true,
+    can_change_info: true,
+    can_invite_users: true,
+    can_post_messages: true,
+    can_edit_messages: true,
+    can_pin_messages: true,
+    can_manage_topics: true,
+  };
+}
+
 const isMember = (member) =>
   member.status === "creator" ||
   member.status === "administrator" ||
@@ -14,7 +30,7 @@ function panelMarkup(doc) {
         [{ text: "📊 Statistika", callback_data: "admin:stats" }],
         [{ text: "✏️ Salomlashuv matni", callback_data: "admin:welcome" }],
         [{ text: "📢 Obunachilarga xabar", callback_data: "admin:broadcast" }],
-        [{ text: `🔒 Majburiy kanal: ${channel.slice(0, 35)}`, callback_data: "admin:channel" }],
+        [{ text: `🔒 Majburiy obuna: ${channel.slice(0, 35)}`, callback_data: "admin:channel" }],
         ...(doc.requiredChannel
           ? [[{ text: "Kanal talabini o'chirish", callback_data: "admin:channel:off" }]]
           : []),
@@ -151,7 +167,22 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
   const panelText = () =>
     `🛠 @${doc.username} botining admin paneli\n` +
-    `Majburiy kanal: ${doc.requiredChannelTitle || "Sozlanmagan"}`;
+    `Majburiy obuna: ${doc.requiredChannelTitle || "Sozlanmagan"}`;
+  const attachSelectedChat = async (ctx, chatRef) => {
+    try {
+      await setRequiredChannel(bot, Bots, doc, chatRef);
+      pendingAction = null;
+      await ctx.reply(
+        `✅ Majburiy obuna ulandi: ${doc.requiredChannelTitle}\nBotni tanlangan chatga to'liq admin huquqi bilan qo'shing.`,
+        panelMarkup(doc),
+      );
+    } catch (error) {
+      console.error(`@${doc.username} majburiy obuna ulamadi:`, error.message);
+      await ctx.reply(
+        `❌ ${error.message}\nChatni qayta tanlang va botga barcha kerakli admin huquqlarini bering.`,
+      );
+    }
+  };
 
   bot.command("admin", async (ctx) => {
     if (!isOwner(ctx)) {
@@ -174,6 +205,28 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
   });
 
   bot.use(async (ctx) => {
+    if (ctx.message?.chat_shared && ["channel_select", "channel"].includes(pendingAction)) {
+      ctx.handled = true;
+      await attachSelectedChat(ctx, ctx.message.chat_shared.chat_id);
+      return;
+    }
+    if (
+      ctx.message &&
+      !ctx.update.callback_query &&
+      isOwner(ctx) &&
+      ["channel_select", "channel"].includes(pendingAction) &&
+      ctx.text?.trim()
+    ) {
+      ctx.handled = true;
+      try {
+        await setRequiredChannel(bot, Bots, doc, ctx.text.trim());
+        pendingAction = null;
+        await ctx.reply("Majburiy kanal sozlandi.", panelMarkup(doc));
+      } catch (error) {
+        await ctx.reply(`Kanalni sozlab bo'lmadi: ${error.message}\nQayta urinib ko'ring yoki /cancel bosing.`);
+      }
+      return;
+    }
     if (!ctx.message || ctx.update.callback_query || !isOwner(ctx) || !pendingAction) {
       return;
     }
@@ -354,8 +407,37 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
         break;
       case "admin:channel":
         pendingAction = "channel";
-        await ctx.edit(
-          "Kanal username'i (@kanal) yoki ID'sini yuboring. Bot kanal administratori bo'lishi kerak.",
+        await ctx.reply(
+          "Kanal yoki guruhni qulay tugma orqali tanlang:",
+          {
+            reply_markup: {
+              resize_keyboard: true,
+              one_time_keyboard: true,
+              keyboard: [
+                [{
+                  text: "📢 Kanal tanlash",
+                  request_chat: {
+                    request_id: 9101,
+                    chat_is_channel: true,
+                    bot_is_member: true,
+                    user_administrator_rights: fullAdminRights(),
+                    bot_administrator_rights: fullAdminRights(),
+                  },
+                }],
+                [{
+                  text: "👥 Guruh tanlash",
+                  request_chat: {
+                    request_id: 9102,
+                    chat_is_channel: false,
+                    chat_is_forum: null,
+                    bot_is_member: true,
+                    user_administrator_rights: fullAdminRights(),
+                    bot_administrator_rights: fullAdminRights(),
+                  },
+                }],
+              ],
+            },
+          },
         );
         break;
       case "admin:channel:off":
@@ -460,12 +542,15 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
 
 async function setRequiredChannel(bot, Bots, doc, channelInput) {
   const chat = await bot.api("getChat", { chat_id: channelInput });
+  if (chat.type && !["channel", "group", "supergroup"].includes(chat.type)) {
+    throw new Error("Faqat kanal yoki guruh tanlanishi kerak.");
+  }
   const botMember = await bot.api("getChatMember", {
     chat_id: chat.id,
     user_id: doc._id,
   });
   if (botMember.status !== "administrator" && botMember.status !== "creator") {
-    throw new Error("Bot kanal administratori bo'lishi kerak.");
+    throw new Error("Bot tanlangan kanal yoki guruhga to'liq admin huquqi bilan qo'shilishi kerak.");
   }
 
   let link = chat.username ? `https://t.me/${chat.username}` : chat.invite_link;

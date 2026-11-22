@@ -72,9 +72,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isAdmin = (id) => ADMIN_IDS.includes(id);
 const kb = (rows) => ({ reply_markup: { inline_keyboard: rows } });
 const back = (to, text = "⬅️ Orqaga") => [{ text, callback_data: to }];
+const fullAdminRights = () => ({
+  can_manage_chat: true,
+  can_delete_messages: true,
+  can_manage_video_chats: true,
+  can_restrict_members: true,
+  can_promote_members: true,
+  can_change_info: true,
+  can_invite_users: true,
+  can_post_messages: true,
+  can_edit_messages: true,
+  can_pin_messages: true,
+  can_manage_topics: true,
+});
 
 let Bots, Users, Subs, FooterSettings, WatermarkProfiles;
 let PlatformSettings, Topups, BalanceTransactions, billingService;
+let constructorGate = null;
 const children = new Map(); // botId -> BotConstructor (ishlayotgan mijoz botlari)
 const childPolls = new Set();
 const states = new Map(); // userId -> kutilayotgan kiritish holati
@@ -354,6 +368,8 @@ async function main() {
   await Topups.createIndex({ ownerId: 1, status: 1, createdAt: -1 });
   await BalanceTransactions.createIndex({ reference: 1 }, { unique: true });
   await BalanceTransactions.createIndex({ ownerId: 1, createdAt: -1 });
+  constructorGate =
+    (await PlatformSettings.findOne({ _id: "constructor_gate" })) || null;
   const blockedUsers = new Set(
     (await Users.find({ blocked: true }, { projection: { _id: 1 } }).toArray())
       .map((user) => user._id),
@@ -566,6 +582,29 @@ async function main() {
       return;
     }
     if (ctx.chat?.type !== "private") return;
+    if (!isAdmin(userId) && constructorGate?.chatId) {
+      try {
+        const member = await mother.api("getChatMember", {
+          chat_id: constructorGate.chatId,
+          user_id: userId,
+        });
+        const isMember = ["creator", "administrator", "member"].includes(member.status) ||
+          (member.status === "restricted" && member.is_member);
+        if (!isMember) {
+          ctx.handled = true;
+          await ctx.reply(
+            "Botdan foydalanish uchun avval majburiy kanal yoki guruhga obuna bo'ling:",
+            kb([
+              [{ text: "📢 Obuna bo'lish", url: constructorGate.link }],
+              [{ text: "✅ Obunani tekshirish", callback_data: "constructor_gate_check" }],
+            ]),
+          );
+          return;
+        }
+      } catch (error) {
+        console.error("Konstruktor majburiy obunasini tekshirib bo'lmadi:", error.message);
+      }
+    }
     const name = ctx.from.first_name;
     const username = ctx.from.username || null;
     const recent = recentUserWrites.get(userId);
@@ -697,6 +736,57 @@ async function main() {
   };
 
   mother.onUpdate("message", async (ctx) => {
+    const gateState = ctx.from ? states.get(ctx.from.id) : null;
+    if (
+      ctx.chat?.type === "private" &&
+      isAdmin(ctx.from?.id) &&
+      gateState?.type === "adm_gate_select" &&
+      ctx.message.chat_shared
+    ) {
+      try {
+        const chat = await mother.api("getChat", { chat_id: ctx.message.chat_shared.chat_id });
+        if (!["channel", "group", "supergroup"].includes(chat.type)) {
+          throw new Error("Faqat kanal yoki guruh tanlanishi kerak.");
+        }
+        const botMember = await mother.api("getChatMember", {
+          chat_id: chat.id,
+          user_id: ctx.me?.id ?? (await mother.api("getMe")).id,
+        });
+        if (!["administrator", "creator"].includes(botMember.status)) {
+          throw new Error("Bot tanlangan kanal yoki guruhga to'liq admin huquqi bilan qo'shilishi kerak.");
+        }
+        let link = chat.username ? `https://t.me/${chat.username}` : chat.invite_link;
+        if (!link) {
+          try {
+            link = await mother.api("exportChatInviteLink", { chat_id: chat.id });
+          } catch {
+            link = `tg://resolve?domain=`;
+          }
+        }
+        constructorGate = {
+          chatId: chat.id,
+          title: chat.title || chat.username || String(chat.id),
+          link,
+        };
+        await PlatformSettings.updateOne(
+          { _id: "constructor_gate" },
+          { $set: { ...constructorGate, updatedAt: new Date() } },
+          { upsert: true },
+        );
+        states.delete(ctx.from.id);
+        await ctx.reply(
+          `✅ Majburiy obuna ulandi: ${constructorGate.title}`,
+          kb([
+            [{ text: "🔓 Majburiy obunani o'chirish", callback_data: "adm_gate_off" }],
+            back("adm"),
+          ]),
+        );
+      } catch (error) {
+        await ctx.reply(`❌ ${error.message}\nChatni qayta tanlang va botga barcha admin huquqlarini bering.`);
+      }
+      ctx.handled = true;
+      return;
+    }
     const broadcastState = ctx.from ? states.get(ctx.from.id) : null;
     if (
       ctx.chat?.type === "private" &&
@@ -1076,10 +1166,76 @@ async function main() {
         [{ text: "💰 To'ldirish so'rovlari", callback_data: "adm_topups" }],
         [{ text: "🤖 Barcha botlar", callback_data: "adm_bots:0" }],
         [{ text: "📢 Hammaga xabar", callback_data: "adm_bc" }],
+        [{ text: "🔒 Majburiy obuna", callback_data: "adm_gate" }],
         back("menu"),
       ]),
     );
   }, true);
+
+  cb(/^adm_gate$/, async (ctx) => {
+    states.set(ctx.from.id, { type: "adm_gate_select" });
+    await ctx.reply(
+      `Majburiy obuna: ${constructorGate?.title || "sozlanmagan"}\nKanal yoki guruhni tanlang:`,
+      {
+        reply_markup: {
+          resize_keyboard: true,
+          one_time_keyboard: true,
+          keyboard: [
+            [{
+              text: "📢 Kanal tanlash",
+              request_chat: {
+                request_id: 9201,
+                chat_is_channel: true,
+                bot_is_member: true,
+                user_administrator_rights: fullAdminRights(),
+                bot_administrator_rights: fullAdminRights(),
+              },
+            }],
+            [{
+              text: "👥 Guruh tanlash",
+              request_chat: {
+                request_id: 9202,
+                chat_is_channel: false,
+                bot_is_member: true,
+                user_administrator_rights: fullAdminRights(),
+                bot_administrator_rights: fullAdminRights(),
+              },
+            }],
+          ],
+        },
+      },
+    );
+  }, true);
+
+  cb(/^adm_gate_off$/, async (ctx) => {
+    await PlatformSettings.updateOne(
+      { _id: "constructor_gate" },
+      { $set: { chatId: null, title: "", link: "" } },
+      { upsert: true },
+    );
+    constructorGate = null;
+    await show(ctx, "Majburiy obuna o'chirildi.", kb([back("adm")]));
+  }, true);
+
+  cb(/^constructor_gate_check$/, async (ctx) => {
+    if (!constructorGate?.chatId) return show(ctx, "Majburiy obuna sozlanmagan.", kb([back("menu")]));
+    try {
+      const member = await mother.api("getChatMember", {
+        chat_id: constructorGate.chatId,
+        user_id: ctx.from.id,
+      });
+      const joined = ["creator", "administrator", "member"].includes(member.status) ||
+        (member.status === "restricted" && member.is_member);
+      if (joined) {
+        states.delete(ctx.from.id);
+        await show(ctx, "✅ Obuna tasdiqlandi.", kb([back("menu")]));
+      } else {
+        await ctx.reply("Hali obuna topilmadi. Avval chatga obuna bo'ling.");
+      }
+    } catch (error) {
+      await ctx.reply("Obunani tekshirib bo'lmadi. Keyinroq urinib ko'ring.");
+    }
+  });
 
   cb(/^adm_tariffs$/, async (ctx) => {
     states.delete(ctx.from.id);
