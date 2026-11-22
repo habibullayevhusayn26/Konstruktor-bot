@@ -120,6 +120,7 @@ function registerSmmPanel(bot, options = {}) {
   async function saveConfig(update) {
     if (!Bots) return;
     await Bots.updateOne({ _id: botId }, { $set: update });
+    Object.assign(bot.config, update);
   }
 
   async function showAdmin(ctx) {

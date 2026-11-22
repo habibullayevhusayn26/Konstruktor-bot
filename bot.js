@@ -216,6 +216,16 @@ async function createBot(ownerId, botType, token) {
       initial: billingSettings.prices[botType].initial,
       monthly: billingSettings.prices[botType].monthly,
     },
+    ...(botType === "smm"
+      ? {
+          smmApiUrl: process.env.SMM_API_URL || "",
+          smmApiKey: process.env.SMM_API_KEY || "",
+          smmUsdRate: Number(process.env.SMM_USD_RATE || 12700),
+          smmMarkupPercent: Number(process.env.SMM_MARKUP_PERCENT || 30),
+          smmCardNumber: process.env.SMM_CARD_NUMBER || "",
+          smmCardOwner: process.env.SMM_CARD_OWNER || "",
+        }
+      : {}),
     createdAt: new Date(),
   };
   await Bots.insertOne(doc);
@@ -1591,18 +1601,50 @@ async function main() {
     const b = await Bots.findOne({ _id: Number(m[1]) });
     if (!b) return;
     const subs = await Subs.countDocuments({ botId: b._id });
+    const smmButtons = b.type === "smm"
+      ? [
+          [{ text: "🌐 SMM API havolasi", callback_data: `adm_smm:url:${b._id}` }, { text: "🔑 SMM API kaliti", callback_data: `adm_smm:key:${b._id}` }],
+          [{ text: "💱 USD kursi", callback_data: `adm_smm:rate:${b._id}` }, { text: "📈 Ustama", callback_data: `adm_smm:markup:${b._id}` }],
+          [{ text: "🏦 Karta raqami", callback_data: `adm_smm:card:${b._id}` }, { text: "👤 Karta egasi", callback_data: `adm_smm:cardowner:${b._id}` }],
+        ]
+      : [];
     await show(
       ctx,
       `🤖 @${b.username}\n` +
         `Turi: ${BOT_TYPES[b.type]?.label || "Eski bot"}\n` +
         `Egasi (ID): ${b.ownerId}\nObunachilar: ${subs}\n` +
-        `Holati: ${b.banned ? "🚫 bloklangan" : "✅ faol"}`,
+        `Holati: ${b.banned ? "🚫 bloklangan" : "✅ faol"}` +
+        (b.type === "smm"
+          ? `\n\nSMM API: ${b.smmApiUrl ? "✅ ulangan" : "❌ ulanmagan"}\nUSD kursi: ${Number(b.smmUsdRate || 12700).toLocaleString("uz-UZ")} so'm\nUstama: ${Number(b.smmMarkupPercent || 30)}%`
+          : ""),
       kb([
+        ...smmButtons,
         [{ text: b.banned ? "♻️ Blokdan chiqarish" : "🚫 Bloklash", callback_data: `adm_ban:${b._id}` }],
         [{ text: "🗑 O'chirish", callback_data: `del:${b._id}` }],
         [{ text: "👤 Egasi profilini ko'rish", callback_data: `adm_user:${b.ownerId}` }],
         back("adm_bots:0"),
       ]),
+    );
+  }, true);
+
+  cb(/^adm_smm:(url|key|rate|markup|card|cardowner):(\d+)$/, async (ctx, match) => {
+    const field = match[1];
+    const botId = Number(match[2]);
+    const b = await Bots.findOne({ _id: botId, type: "smm" });
+    if (!b) return show(ctx, "SMM bot topilmadi.", kb([back("adm_bots:0")]));
+    states.set(ctx.from.id, { type: `adm_smm:${field}`, botId });
+    const prompts = {
+      url: "SMM API havolasini https://.../api/v2 ko'rinishida yuboring:",
+      key: "SMM provider API kalitini yuboring:",
+      rate: "1 USD uchun kursni so'mda yuboring:",
+      markup: "Narx ustamasini foizda yuboring:",
+      card: "Hisob to'ldirish uchun karta raqamini yuboring:",
+      cardowner: "Karta egasi nomini yuboring:",
+    };
+    await show(
+      ctx,
+      prompts[field],
+      kb([back(`adm_bot:${botId}`)]),
     );
   }, true);
 
@@ -1856,6 +1898,51 @@ async function main() {
           );
           const view = await userProfileView(st.userId, true);
           if (view) await ctx.reply(...view);
+          break;
+        }
+        case "adm_smm:url":
+        case "adm_smm:key":
+        case "adm_smm:rate":
+        case "adm_smm:markup":
+        case "adm_smm:card":
+        case "adm_smm:cardowner": {
+          if (!isAdmin(uid)) return;
+          const field = st.type.split(":")[2];
+          const text = ctx.text.trim();
+          let update;
+          try {
+            if (field === "url") {
+              if (!/^https?:\/\//i.test(text)) throw new Error("API havolasi http:// yoki https:// bilan boshlansin.");
+              update = { smmApiUrl: text };
+            } else if (field === "key") {
+              if (text.length < 8) throw new Error("API kaliti juda qisqa.");
+              update = { smmApiKey: text };
+            } else if (field === "rate") {
+              const rate = Number(text.replace(/[^\d.]/g, ""));
+              if (!Number.isFinite(rate) || rate <= 0) throw new Error("USD kursi musbat son bo'lsin.");
+              update = { smmUsdRate: rate };
+            } else if (field === "markup") {
+              const markup = Number(text.replace(/[^\d.-]/g, ""));
+              if (!Number.isFinite(markup) || markup < 0 || markup > 500) throw new Error("Ustama 0–500% oralig'ida bo'lsin.");
+              update = { smmMarkupPercent: markup };
+            } else if (field === "card") {
+              const card = text.replace(/\D/g, "");
+              if (card.length < 12 || card.length > 23) throw new Error("Karta raqami noto'g'ri.");
+              update = { smmCardNumber: text };
+            } else {
+              if (text.length < 2 || text.length > 80) throw new Error("Karta egasi nomi noto'g'ri.");
+              update = { smmCardOwner: text };
+            }
+          } catch (error) {
+            await ctx.reply(`❌ ${error.message}`);
+            break;
+          }
+          await Bots.updateOne({ _id: st.botId, type: "smm" }, { $set: update });
+          const child = children.get(st.botId);
+          if (child) Object.assign(child.config, update);
+          states.delete(uid);
+          await ctx.reply("✅ SMM API sozlamasi saqlandi.");
+          await ctx.reply(...botPanel(await Bots.findOne({ _id: st.botId })));
           break;
         }
         case "token": {
