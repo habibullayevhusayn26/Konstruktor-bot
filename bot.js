@@ -250,6 +250,14 @@ async function startHealthServer(mother) {
       response.end();
       return;
     }
+    if (pathname === "/") {
+      response.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      response.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
     if (pathname !== "/health" && pathname !== "/cron") {
       response.writeHead(404);
       response.end("Not found");
