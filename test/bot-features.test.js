@@ -77,7 +77,8 @@ test("bot constructor dispatches messages, photos, callbacks and middleware", as
   bot.command("start", async () => seen.push("command"));
   bot.onText(/^hello$/, async () => seen.push("text"));
   bot.onPhoto(async () => seen.push("photo"));
-  bot.onCallbackData(/^ok$/, async () => seen.push("callback"));
+  bot.onCallbackData(/^item:(\d+)$/, async (ctx, match) =>
+    seen.push(`callback:${match[1]}`));
   bot.onUpdate("channel_post", async (ctx) =>
     seen.push(`channel:${ctx.message.text}`),
   );
@@ -93,7 +94,7 @@ test("bot constructor dispatches messages, photos, callbacks and middleware", as
   await bot.processUpdate({
     callback_query: {
       id: "q",
-      data: "ok",
+      data: "item:42",
       from: message.from,
       message,
     },
@@ -106,7 +107,7 @@ test("bot constructor dispatches messages, photos, callbacks and middleware", as
     },
   });
 
-  assert.deepEqual(seen, ["command", "text", "photo", "callback", "channel:new post"]);
+  assert.deepEqual(seen, ["command", "text", "photo", "callback:42", "channel:new post"]);
 });
 
 test("polling subscribes to channel post updates", async () => {

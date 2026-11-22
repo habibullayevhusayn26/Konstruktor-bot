@@ -288,12 +288,12 @@ class BotConstructor {
     await client.close();
   }
 
-  async _runWithLoading(handler, context) {
+  async _runWithLoading(handler, context, ...args) {
     const isPrivateChat =
       context.chat?.type === "private" && Boolean(context.from);
     const isChannelPost = Boolean(context.update?.channel_post);
     if (!isPrivateChat && !isChannelPost) {
-      return handler(context);
+      return handler(context, ...args);
     }
 
     let loadingMessage;
@@ -334,7 +334,7 @@ class BotConstructor {
     }, this.options.loadingDelay);
 
     try {
-      return await handler(context);
+      return await handler(context, ...args);
     } finally {
       clearTimeout(timer);
       if (loadingRequest) {
@@ -448,8 +448,9 @@ class BotConstructor {
 
       for (const item of this.callbackHandlers) {
         item.pattern.lastIndex = 0;
-        if (item.pattern.test(context.text)) {
-          await this._runWithLoading(item.handler, context);
+        const match = item.pattern.exec(context.text);
+        if (match) {
+          await this._runWithLoading(item.handler, context, match);
           break;
         }
       }
@@ -507,8 +508,9 @@ class BotConstructor {
 
     for (const item of this.textHandlers) {
       item.pattern.lastIndex = 0;
-      if (item.pattern.test(context.text)) {
-        await this._runWithLoading(item.handler, context);
+      const match = item.pattern.exec(context.text);
+      if (match) {
+        await this._runWithLoading(item.handler, context, match);
         return;
       }
     }
