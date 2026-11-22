@@ -256,7 +256,17 @@ async function startHealthServer(mother) {
       return;
     }
     if (pathname === "/cron") {
-      const suppliedSecret = Buffer.from(request.headers["x-cron-secret"] || "");
+      const url = new URL(request.url || "/", "http://localhost");
+      const authorization = request.headers.authorization || "";
+      const bearerSecret = authorization.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length).trim()
+        : "";
+      const suppliedSecret = Buffer.from(
+        request.headers["x-cron-secret"] ||
+        bearerSecret ||
+        url.searchParams.get("secret") ||
+        "",
+      );
       const expectedSecret = Buffer.from(CRON_SECRET);
       if (
         suppliedSecret.length !== expectedSecret.length ||
@@ -268,8 +278,11 @@ async function startHealthServer(mother) {
       }
     }
     if (!mother.running) {
-      response.writeHead(503, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ status: "starting" }));
+      response.writeHead(pathname === "/cron" ? 202 : 503, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      response.end(JSON.stringify({ status: "starting", ...(pathname === "/cron" ? { retry: true } : {}) }));
       return;
     }
 
