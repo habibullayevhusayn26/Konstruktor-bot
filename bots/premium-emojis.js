@@ -287,6 +287,14 @@ function decorateKeyboard(replyMarkup) {
 
 function decoratePayload(method, payload) {
   let result = payload;
+  const disablePremiumEmoji = result?.disablePremiumEmoji === true;
+  if (disablePremiumEmoji) {
+    result = { ...result };
+    delete result.disablePremiumEmoji;
+  }
+  if (disablePremiumEmoji) {
+    return { payload: result, changed: false };
+  }
   const textField = ["sendMessage", "editMessageText"].includes(method)
     ? "text"
     : [

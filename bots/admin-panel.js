@@ -234,6 +234,12 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
       pendingAction = null;
       return;
     }
+    if (ctx.text.startsWith("/start")) {
+      ctx.handled = true;
+      pendingAction = null;
+      await ctx.reply("Majburiy obuna tanlash bekor qilindi.");
+      return;
+    }
     if (ctx.text.startsWith("/cancel")) {
       pendingAction = null;
       ctx.handled = true;
@@ -291,12 +297,12 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: "Ko'k", callback_data: "admin:broadcast:style:primary" },
-                { text: "Yashil", callback_data: "admin:broadcast:style:success" },
+                { text: "Ko'k", callback_data: "admin:broadcast:style:primary", style: "primary" },
+                { text: "Yashil", callback_data: "admin:broadcast:style:success", style: "success" },
               ],
               [
-                { text: "Qizil", callback_data: "admin:broadcast:style:danger" },
-                { text: "Standart", callback_data: "admin:broadcast:style:default" },
+                { text: "Qizil", callback_data: "admin:broadcast:style:danger", style: "danger" },
+                { text: "Standart", callback_data: "admin:broadcast:style:default", style: "default" },
               ],
             ],
           },
@@ -429,7 +435,6 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
                   request_chat: {
                     request_id: 9102,
                     chat_is_channel: false,
-                    chat_is_forum: null,
                     bot_is_member: true,
                     user_administrator_rights: fullAdminRights(),
                     bot_administrator_rights: fullAdminRights(),
@@ -460,7 +465,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
     }
   });
 
-  bot.onCallbackData(/^admin:broadcast:(skip_media|style:(?:default|primary|success|danger)|send)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:broadcast:(skip_media|style:(?:default|primary|success|danger)|preview|send|cancel)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -481,13 +486,36 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
     if (styleMatch) {
       if (pendingAction !== "broadcast-buttons" || !broadcastDraft) return;
       broadcastDraft.style = styleMatch[1];
+      const selected = {
+        primary: "🔵 Ko'k",
+        success: "🟢 Yashil",
+        danger: "🔴 Qizil",
+        default: "⚪ Standart",
+      }[styleMatch[1]];
       await ctx.edit(
-        "Tugma rangini tanlandi. Tugmani formatda yuboring:\nTugma matni | https://havola.uz",
+        `Tanlangan rang: ${selected}\nTugmani formatda yuboring:\nTugma matni | https://havola.uz`,
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "✅ Xabarni yuborish", callback_data: "admin:broadcast:send" }],
-              [{ text: "Tugmasiz yuborish", callback_data: "admin:broadcast:send" }],
+              [{
+                text: "Ko'k",
+                callback_data: "admin:broadcast:style:primary",
+                style: "primary",
+              }, {
+                text: "Yashil",
+                callback_data: "admin:broadcast:style:success",
+                style: "success",
+              }],
+              [{
+                text: "Qizil",
+                callback_data: "admin:broadcast:style:danger",
+                style: "danger",
+              }, {
+                text: "Standart",
+                callback_data: "admin:broadcast:style:default",
+                style: "default",
+              }],
+              [{ text: "✅ Xabarni ko'rish", callback_data: "admin:broadcast:preview" }],
             ],
           },
         },
@@ -495,8 +523,63 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
       return;
     }
 
-    if (ctx.text === "admin:broadcast:send") {
+    if (ctx.text === "admin:broadcast:preview") {
       if (pendingAction !== "broadcast-buttons" || !broadcastDraft) return;
+      const inlineKeyboard = broadcastDraft.buttons.map((button) => [{
+        text: button.text,
+        url: button.url,
+        ...(broadcastDraft.style === "default" ? {} : { style: broadcastDraft.style }),
+      }]);
+      try {
+        if (broadcastDraft.mediaMessageId) {
+          await bot.api("copyMessage", {
+            chat_id: doc.ownerId,
+            from_chat_id: doc.ownerId,
+            message_id: broadcastDraft.mediaMessageId,
+          });
+        }
+        if (broadcastDraft.textMessageId) {
+          const copied = await bot.api("copyMessage", {
+            chat_id: doc.ownerId,
+            from_chat_id: doc.ownerId,
+            message_id: broadcastDraft.textMessageId,
+          });
+          if (inlineKeyboard.length) {
+            await bot.api("editMessageReplyMarkup", {
+              chat_id: doc.ownerId,
+              message_id: copied.message_id,
+              disablePremiumEmoji: true,
+              reply_markup: { inline_keyboard: inlineKeyboard },
+            });
+          }
+        }
+        pendingAction = "broadcast-preview";
+        await ctx.reply(
+          "Yuqoridagi ko'rinish preview. Xabarni yuborishni tasdiqlaysizmi?",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "✅ Ha, barchaga yuborish", callback_data: "admin:broadcast:send" }],
+                [{ text: "❌ Bekor qilish", callback_data: "admin:broadcast:cancel" }],
+              ],
+            },
+          },
+        );
+      } catch (error) {
+        await ctx.reply(`Preview yaratib bo'lmadi: ${error.message}`);
+      }
+      return;
+    }
+
+    if (ctx.text === "admin:broadcast:cancel") {
+      pendingAction = null;
+      broadcastDraft = null;
+      await ctx.reply("Xabar yuborish bekor qilindi.");
+      return;
+    }
+
+    if (ctx.text === "admin:broadcast:send") {
+      if (pendingAction !== "broadcast-preview" || !broadcastDraft) return;
       pendingAction = null;
       await ctx.reply("Xabar yuborish boshlandi.");
       const result = await broadcast(bot, Subs, doc._id, broadcastDraft, doc.ownerId);
@@ -614,6 +697,7 @@ async function broadcast(bot, Subs, botId, draftOrText, ownerId) {
               await bot.api("editMessageReplyMarkup", {
                 chat_id: subscriber.userId,
                 message_id: copied.message_id,
+                disablePremiumEmoji: true,
                 reply_markup: {
                   inline_keyboard: draftOrText.buttons.map((button) => [{
                     text: button.text,

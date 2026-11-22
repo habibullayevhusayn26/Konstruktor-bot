@@ -822,12 +822,12 @@ async function main() {
           "3/3 — Inline tugma rangini tanlang:",
           kb([
             [
-              { text: "Ko'k", callback_data: "adm_bc:style:primary" },
-              { text: "Yashil", callback_data: "adm_bc:style:success" },
+              { text: "Ko'k", callback_data: "adm_bc:style:primary", style: "primary" },
+              { text: "Yashil", callback_data: "adm_bc:style:success", style: "success" },
             ],
             [
-              { text: "Qizil", callback_data: "adm_bc:style:danger" },
-              { text: "Standart", callback_data: "adm_bc:style:default" },
+              { text: "Qizil", callback_data: "adm_bc:style:danger", style: "danger" },
+              { text: "Standart", callback_data: "adm_bc:style:default", style: "default" },
             ],
           ]),
         );
@@ -1579,12 +1579,35 @@ async function main() {
     const state = states.get(ctx.from.id);
     if (state?.type !== "adm_bc_buttons") return;
     state.style = match[1];
+    const stylePreview = {
+      primary: "🔵",
+      success: "🟢",
+      danger: "🔴",
+      default: "⚪",
+    }[match[1]];
     await show(
       ctx,
-      "3/3 — Havolali tugma qo'shing.\nFormat: Tugma matni | https://example.com\nBir nechta tugmani har qatorda alohida yuboring.",
+      `3/3 — Havolali tugma qo'shing.\nTanlangan rang: ${stylePreview}\nFormat: Tugma matni | https://example.com\nBir nechta tugmani har qatorda alohida yuboring.`,
       kb([
-        [{ text: "✅ Xabarni yuborish", callback_data: "adm_bc:send" }],
-        [{ text: "Tugmasiz yuborish", callback_data: "adm_bc:send" }],
+        [{
+          text: "Ko'k",
+          callback_data: "adm_bc:style:primary",
+          style: "primary",
+        }, {
+          text: "Yashil",
+          callback_data: "adm_bc:style:success",
+          style: "success",
+        }],
+        [{
+          text: "Qizil",
+          callback_data: "adm_bc:style:danger",
+          style: "danger",
+        }, {
+          text: "Standart",
+          callback_data: "adm_bc:style:default",
+          style: "default",
+        }],
+        [{ text: "✅ Xabarni ko'rish", callback_data: "adm_bc:preview" }],
         back("adm"),
       ]),
     );
@@ -1593,6 +1616,59 @@ async function main() {
   cb(/^adm_bc:send$/, async (ctx) => {
     const state = states.get(ctx.from.id);
     if (state?.type !== "adm_bc_buttons") return;
+    await broadcastSend(ctx, state);
+  }, true);
+
+  cb(/^adm_bc:preview$/, async (ctx) => {
+    const state = states.get(ctx.from.id);
+    if (state?.type !== "adm_bc_buttons") return;
+    const inlineKeyboard = state.buttons.map((button) => [{
+      text: button.text,
+      url: button.url,
+      ...(state.style === "default" ? {} : { style: state.style }),
+    }]);
+
+    try {
+      if (state.mediaMessageId) {
+        await mother.api("copyMessage", {
+          chat_id: ctx.chat.id,
+          from_chat_id: ctx.chat.id,
+          message_id: state.mediaMessageId,
+        });
+      }
+      if (state.textMessageId) {
+        const copied = await mother.api("copyMessage", {
+          chat_id: ctx.chat.id,
+          from_chat_id: ctx.chat.id,
+          message_id: state.textMessageId,
+        });
+        if (inlineKeyboard.length) {
+          await mother.api("editMessageReplyMarkup", {
+            chat_id: ctx.chat.id,
+            message_id: copied.message_id,
+            disablePremiumEmoji: true,
+            reply_markup: { inline_keyboard: inlineKeyboard },
+          });
+        }
+      }
+      await ctx.reply(
+        "Yuqoridagi ko'rinish preview. Xabarni yuborishni tasdiqlaysizmi?",
+        kb([
+          [{ text: "✅ Ha, barchaga yuborish", callback_data: "adm_bc:send" }],
+          [{ text: "❌ Bekor qilish", callback_data: "adm_bc:cancel" }],
+        ]),
+      );
+    } catch (error) {
+      await ctx.reply(`Preview yaratib bo'lmadi: ${error.message}`);
+    }
+  }, true);
+
+  cb(/^adm_bc:cancel$/, async (ctx) => {
+    states.delete(ctx.from.id);
+    await show(ctx, "Xabar yuborish bekor qilindi.", kb([back("adm")]));
+  }, true);
+
+  const broadcastSend = async (ctx, state) => {
     states.delete(ctx.from.id);
 
     const sent = [];
@@ -1620,6 +1696,7 @@ async function main() {
             await mother.api("editMessageReplyMarkup", {
               chat_id: user._id,
               message_id: copied.message_id,
+              disablePremiumEmoji: true,
               reply_markup: { inline_keyboard: inlineKeyboard },
             });
           }
@@ -1631,7 +1708,7 @@ async function main() {
       await sleep(50);
     }
     await ctx.reply(`✅ Xabar yuborildi: ${sent.length} foydalanuvchi.`);
-  }, true);
+  };
 
   /* --- Matn kiritish holatlari --- */
   mother.onText(/[\s\S]*/, async (ctx) => {
