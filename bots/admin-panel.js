@@ -1,0 +1,553 @@
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isMember = (member) =>
+  member.status === "creator" ||
+  member.status === "administrator" ||
+  member.status === "member" ||
+  (member.status === "restricted" && member.is_member);
+
+function panelMarkup(doc) {
+  const channel = doc.requiredChannelTitle || "Sozlanmagan";
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📊 Statistika", callback_data: "admin:stats" }],
+        [{ text: "✏️ Salomlashuv matni", callback_data: "admin:welcome" }],
+        [{ text: "📢 Obunachilarga xabar", callback_data: "admin:broadcast" }],
+        [{ text: `🔒 Majburiy kanal: ${channel.slice(0, 35)}`, callback_data: "admin:channel" }],
+        ...(doc.requiredChannel
+          ? [[{ text: "Kanal talabini o'chirish", callback_data: "admin:channel:off" }]]
+          : []),
+      ],
+    },
+  };
+}
+
+function registerSubscriptionGate(bot, { doc, Subs }) {
+  const persistedSubscribers = new Map();
+  const memberCache = new Map();
+  const persistSubscriber = async (ctx) => {
+    const userId = ctx.from.id;
+    const now = Date.now();
+    if (now - (persistedSubscribers.get(userId) || 0) < 60_000) return;
+    const result = await Subs.updateOne(
+      { botId: doc._id, userId },
+      { $setOnInsert: { createdAt: new Date() } },
+      { upsert: true },
+    );
+    persistedSubscribers.set(userId, now);
+    if (result.upsertedCount > 0 && userId !== doc.ownerId) {
+      const label = ctx?.from?.username
+        ? `@${ctx.from.username}`
+        : ctx?.from?.first_name || `ID ${userId}`;
+      await bot.sendMessage(
+        doc.ownerId,
+        `👤 Yangi obunachi qo'shildi\n${label}\nTelegram ID: ${userId}`,
+      ).catch((error) =>
+        console.error(`Yangi obunachi haqida bot egasiga xabar yuborib bo'lmadi:`, error.message),
+      );
+    }
+    if (persistedSubscribers.size > 2000) {
+      persistedSubscribers.delete(persistedSubscribers.keys().next().value);
+    }
+  };
+
+  bot.use(async (ctx) => {
+    if (!ctx.from || !ctx.chat) return;
+    if (ctx.chat.type !== "private") {
+      ctx.handled = true;
+      await ctx.reply("Botdan shaxsiy chatda foydalaning.");
+      return;
+    }
+
+    if (ctx.from.id === doc.ownerId) {
+      if (ctx.message) {
+        try {
+          await persistSubscriber(ctx);
+        } catch (error) {
+          console.error("Bot egasini obunachi sifatida saqlab bo'lmadi:", error.message);
+        }
+      }
+      return;
+    }
+
+    if (!bot.config.requiredChannel) {
+      try {
+        await persistSubscriber(ctx);
+      } catch (error) {
+        console.error(`@${doc.username} obunachisini saqlab bo'lmadi:`, error.message);
+      }
+      return;
+    }
+
+    ctx.handled = true;
+    const cachedMember = memberCache.get(ctx.from.id);
+    if (
+      cachedMember &&
+      String(cachedMember.channelId) === String(bot.config.requiredChannel) &&
+      cachedMember.expiresAt > Date.now()
+    ) {
+      try {
+        await persistSubscriber(ctx);
+      } catch (error) {
+        console.error(`@${doc.username} obunachisini saqlab bo'lmadi:`, error.message);
+      }
+      ctx.handled = false;
+      return;
+    }
+
+    let member;
+    try {
+      member = await bot.api("getChatMember", {
+        chat_id: bot.config.requiredChannel,
+        user_id: ctx.from.id,
+      });
+    } catch (error) {
+      console.error(`@${doc.username} kanal obunasini tekshirib bo'lmadi:`, error.message);
+      if (ctx.callbackQuery) {
+        await ctx.answer({ text: "Obunani tekshirishda xato. Qayta urinib ko'ring." }).catch(() => {});
+      }
+      await ctx.reply("Obunani hozir tekshirib bo'lmadi. Keyinroq qayta urinib ko'ring.");
+      return;
+    }
+
+    if (isMember(member)) {
+      try {
+        await persistSubscriber(ctx);
+      } catch (error) {
+        console.error(`@${doc.username} obunachisini saqlab bo'lmadi:`, error.message);
+      }
+      memberCache.set(ctx.from.id, {
+        channelId: bot.config.requiredChannel,
+        expiresAt: Date.now() + 5000,
+      });
+      if (memberCache.size > 2000) {
+        memberCache.delete(memberCache.keys().next().value);
+      }
+      ctx.handled = false;
+      return;
+    }
+
+    if (ctx.callbackQuery) {
+      await ctx.answer({ text: "Avval kanalga obuna bo'ling." }).catch(() => {});
+    }
+    await ctx.reply(
+      "Botdan foydalanish uchun avval kanalga obuna bo'ling, so'ng tekshirish tugmasini bosing.",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "📢 Kanalga obuna bo'lish", url: bot.config.requiredChannelLink }],
+            [{ text: "✅ Obunani tekshirish", callback_data: "join:check" }],
+          ],
+        },
+      },
+    );
+  });
+}
+
+function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
+  let pendingAction = null;
+  let broadcastDraft = null;
+  const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
+  const panelText = () =>
+    `🛠 @${doc.username} botining admin paneli\n` +
+    `Majburiy kanal: ${doc.requiredChannelTitle || "Sozlanmagan"}`;
+
+  bot.command("admin", async (ctx) => {
+    if (!isOwner(ctx)) {
+      await ctx.reply("Admin panel faqat bot egasi uchun.");
+      return;
+    }
+    pendingAction = null;
+    await ctx.reply(panelText(), panelMarkup(doc));
+  });
+
+  bot.command("cancel", async (ctx) => {
+    if (!isOwner(ctx)) return;
+    const footerCancelled = await onCancel?.(ctx);
+    if (pendingAction) {
+      pendingAction = null;
+      await ctx.reply("Amal bekor qilindi.");
+    } else if (footerCancelled) {
+      await ctx.reply("Amal bekor qilindi.");
+    }
+  });
+
+  bot.use(async (ctx) => {
+    if (!ctx.message || ctx.update.callback_query || !isOwner(ctx) || !pendingAction) {
+      return;
+    }
+    if (ctx.text.startsWith("/admin")) {
+      pendingAction = null;
+      return;
+    }
+    if (ctx.text.startsWith("/cancel")) {
+      pendingAction = null;
+      ctx.handled = true;
+      await onCancel?.(ctx);
+      await ctx.reply("Amal bekor qilindi.");
+      return;
+    }
+
+    ctx.handled = true;
+    if (pendingAction === "broadcast-media") {
+      const hasMedia =
+        ctx.message.photo?.length ||
+        ctx.message.video ||
+        ctx.message.animation ||
+        ctx.message.document;
+      if (hasMedia) {
+        broadcastDraft = {
+          mediaMessageId: ctx.message.message_id,
+          textMessageId: null,
+          buttons: [],
+          style: "default",
+        };
+        pendingAction = "broadcast-text";
+        await ctx.reply("2/3 — Premium emoji qo'llab-quvvatlaydigan matnni yuboring.");
+        return;
+      }
+      if (ctx.text?.trim()) {
+        const text = ctx.text.trim();
+        if (text.length > 4000) {
+          await ctx.reply("Xabar 4000 belgidan oshmasin.");
+          return;
+        }
+        pendingAction = null;
+        await ctx.reply("Xabar yuborish boshlandi.");
+        const result = await broadcast(bot, Subs, doc._id, text, doc.ownerId);
+        broadcastDraft = null;
+        await ctx.reply(`Yuborildi: ${result.sent}\nXatolar: ${result.failed}`);
+        return;
+      }
+      await ctx.reply("GIF, video, rasm yoki fayl yuboring. Media yubormasangiz \"Mediasiz davom etish\" tugmasini bosing.");
+      return;
+    }
+
+    if (pendingAction === "broadcast-text") {
+      const text = ctx.message.text || ctx.message.caption;
+      if (!text) {
+        await ctx.reply("Iltimos, xabar matnini yuboring.");
+        return;
+      }
+      broadcastDraft.textMessageId = ctx.message.message_id;
+      pendingAction = "broadcast-buttons";
+      await ctx.reply(
+        "3/3 — Inline tugma rangini tanlang:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "Ko'k", callback_data: "admin:broadcast:style:primary" },
+                { text: "Yashil", callback_data: "admin:broadcast:style:success" },
+              ],
+              [
+                { text: "Qizil", callback_data: "admin:broadcast:style:danger" },
+                { text: "Standart", callback_data: "admin:broadcast:style:default" },
+              ],
+            ],
+          },
+        },
+      );
+      return;
+    }
+
+    if (pendingAction === "broadcast-buttons") {
+      const match = ctx.text.trim().match(/^(.+?)\s*\|\s*(https?:\/\/\S+)$/i);
+      if (!match) {
+        await ctx.reply("Format: Tugma matni | https://havola.uz");
+        return;
+      }
+      broadcastDraft.buttons.push({ text: match[1].trim().slice(0, 64), url: match[2] });
+      await ctx.reply(
+        "Tugma qo'shildi. Yana tugma qo'shing yoki yuborishni boshlang.",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Xabarni yuborish", callback_data: "admin:broadcast:send" }],
+            ],
+          },
+        },
+      );
+      return;
+    }
+
+    if (!ctx.text.trim()) {
+      await ctx.reply("Iltimos, matn yuboring yoki /cancel bosing.");
+      return;
+    }
+
+    const action = pendingAction;
+    if (action === "welcome") {
+      const welcome = ctx.text.trim().slice(0, 4000);
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { welcome } },
+      );
+      bot.config.welcome = welcome;
+      pendingAction = null;
+      await ctx.reply("Salomlashuv matni saqlandi.");
+      return;
+    }
+
+    if (action === "broadcast") {
+      const text = ctx.text.trim();
+      if (text.length > 4000) {
+        await ctx.reply("Xabar 4000 belgidan oshmasin.");
+        return;
+      }
+      pendingAction = null;
+      await ctx.reply("Xabar yuborish boshlandi.");
+      const result = await broadcast(bot, Subs, doc._id, text, doc.ownerId);
+      await ctx.reply(`Yuborildi: ${result.sent}\nXatolar: ${result.failed}`);
+      return;
+    }
+
+    if (action === "channel") {
+      try {
+        await setRequiredChannel(bot, Bots, doc, ctx.text.trim());
+        pendingAction = null;
+        await ctx.reply("Majburiy kanal sozlandi.", panelMarkup(doc));
+      } catch (error) {
+        console.error(`@${doc.username} majburiy kanalini sozlab bo'lmadi:`, error.message);
+        await ctx.reply(`Kanalni sozlab bo'lmadi: ${error.message}\nQayta urinib ko'ring yoki /cancel bosing.`);
+      }
+    }
+  });
+
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|channel:off)$/, async (ctx) => {
+    await ctx.answer();
+    if (!isOwner(ctx)) return;
+
+    switch (ctx.text) {
+      case "admin:stats": {
+        const [total, today] = await Promise.all([
+          Subs.countDocuments({ botId: doc._id }),
+          Subs.countDocuments({
+            botId: doc._id,
+            createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+          }),
+        ]);
+        await ctx.edit(
+          `📊 @${doc.username}\nJami foydalanuvchi: ${total}\nBugun qo'shilgan: ${today}`,
+          panelMarkup(doc),
+        );
+        break;
+      }
+      case "admin:welcome":
+        pendingAction = "welcome";
+        await ctx.edit("Yangi salomlashuv matnini yuboring (/cancel — bekor qilish).");
+        break;
+      case "admin:broadcast":
+        pendingAction = "broadcast-media";
+        broadcastDraft = null;
+        await ctx.edit(
+          "1/3 — GIF, video, rasm yoki fayl yuboring:",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "➡️ Mediasiz davom etish", callback_data: "admin:broadcast:skip_media" }],
+              ],
+            },
+          },
+        );
+        break;
+      case "admin:channel":
+        pendingAction = "channel";
+        await ctx.edit(
+          "Kanal username'i (@kanal) yoki ID'sini yuboring. Bot kanal administratori bo'lishi kerak.",
+        );
+        break;
+      case "admin:channel:off":
+        await Bots.updateOne(
+          { _id: doc._id, ownerId: doc.ownerId },
+          {
+            $unset: {
+              requiredChannel: "",
+              requiredChannelTitle: "",
+              requiredChannelLink: "",
+            },
+          },
+        );
+        delete bot.config.requiredChannel;
+        delete bot.config.requiredChannelTitle;
+        delete bot.config.requiredChannelLink;
+        pendingAction = null;
+        await ctx.edit(panelText(), panelMarkup(doc));
+        break;
+    }
+  });
+
+  bot.onCallbackData(/^admin:broadcast:(skip_media|style:(?:default|primary|success|danger)|send)$/, async (ctx) => {
+    await ctx.answer();
+    if (!isOwner(ctx)) return;
+
+    if (ctx.text.endsWith("skip_media")) {
+      if (pendingAction !== "broadcast-media") return;
+      broadcastDraft = {
+        mediaMessageId: null,
+        textMessageId: null,
+        buttons: [],
+        style: "default",
+      };
+      pendingAction = "broadcast-text";
+      await ctx.edit("2/3 — Premium emoji qo'llab-quvvatlaydigan matnni yuboring.");
+      return;
+    }
+
+    const styleMatch = ctx.text.match(/^admin:broadcast:style:(default|primary|success|danger)$/);
+    if (styleMatch) {
+      if (pendingAction !== "broadcast-buttons" || !broadcastDraft) return;
+      broadcastDraft.style = styleMatch[1];
+      await ctx.edit(
+        "Tugma rangini tanlandi. Tugmani formatda yuboring:\nTugma matni | https://havola.uz",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Xabarni yuborish", callback_data: "admin:broadcast:send" }],
+              [{ text: "Tugmasiz yuborish", callback_data: "admin:broadcast:send" }],
+            ],
+          },
+        },
+      );
+      return;
+    }
+
+    if (ctx.text === "admin:broadcast:send") {
+      if (pendingAction !== "broadcast-buttons" || !broadcastDraft) return;
+      pendingAction = null;
+      await ctx.reply("Xabar yuborish boshlandi.");
+      const result = await broadcast(bot, Subs, doc._id, broadcastDraft, doc.ownerId);
+      broadcastDraft = null;
+      await ctx.reply(`Yuborildi: ${result.sent}\nXatolar: ${result.failed}`);
+    }
+  });
+
+  bot.onCallbackData(/^join:check$/, async (ctx) => {
+    await ctx.answer();
+    if (!bot.config.requiredChannel) {
+      await ctx.edit("Majburiy kanal sozlanmagan. /start ni bosing.");
+      return;
+    }
+    try {
+      const member = await bot.api("getChatMember", {
+        chat_id: bot.config.requiredChannel,
+        user_id: ctx.from.id,
+      });
+      if (isMember(member)) {
+        await Subs.updateOne(
+          { botId: doc._id, userId: ctx.from.id },
+          { $setOnInsert: { createdAt: new Date() } },
+          { upsert: true },
+        );
+        await ctx.edit("Obuna tasdiqlandi. Botdan foydalanish uchun /start bosing.");
+      } else {
+        await ctx.edit("Kanalga obuna bo'ling, so'ng yana tekshiring.", {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "📢 Kanalga obuna bo'lish", url: bot.config.requiredChannelLink }],
+              [{ text: "✅ Qayta tekshirish", callback_data: "join:check" }],
+            ],
+          },
+        });
+      }
+    } catch (error) {
+      console.error(`@${doc.username} obunani qayta tekshirib bo'lmadi:`, error.message);
+      await ctx.edit("Tekshirishda xato yuz berdi. Keyinroq qayta urinib ko'ring.");
+    }
+  });
+}
+
+async function setRequiredChannel(bot, Bots, doc, channelInput) {
+  const chat = await bot.api("getChat", { chat_id: channelInput });
+  const botMember = await bot.api("getChatMember", {
+    chat_id: chat.id,
+    user_id: doc._id,
+  });
+  if (botMember.status !== "administrator" && botMember.status !== "creator") {
+    throw new Error("Bot kanal administratori bo'lishi kerak.");
+  }
+
+  let link = chat.username ? `https://t.me/${chat.username}` : chat.invite_link;
+  if (!link) {
+    link = await bot.api("exportChatInviteLink", { chat_id: chat.id });
+  }
+
+  const update = {
+    requiredChannel: chat.id,
+    requiredChannelTitle: chat.title || chat.username || String(chat.id),
+    requiredChannelLink: link,
+  };
+  await Bots.updateOne(
+    { _id: doc._id, ownerId: doc.ownerId },
+    { $set: update },
+  );
+  Object.assign(bot.config, update);
+}
+
+async function broadcast(bot, Subs, botId, draftOrText, ownerId) {
+  let sent = 0;
+  let failed = 0;
+  for await (const subscriber of Subs.find({ botId })) {
+    let shouldSend = true;
+    if (bot.config.requiredChannel) {
+      try {
+        const member = await bot.api("getChatMember", {
+          chat_id: bot.config.requiredChannel,
+          user_id: subscriber.userId,
+        });
+        if (!isMember(member)) {
+          await Subs.deleteOne({ botId, userId: subscriber.userId });
+          shouldSend = false;
+        }
+      } catch (error) {
+        failed++;
+        console.error("Obunachining kanal a'zoligini tekshirib bo'lmadi:", error.message);
+        shouldSend = false;
+      }
+    }
+
+    if (shouldSend) {
+      try {
+        if (typeof draftOrText === "string") {
+          await bot.sendMessage(subscriber.userId, draftOrText);
+        } else {
+          if (draftOrText.mediaMessageId) {
+            await bot.api("copyMessage", {
+              chat_id: subscriber.userId,
+              from_chat_id: ownerId,
+              message_id: draftOrText.mediaMessageId,
+            });
+          }
+          if (draftOrText.textMessageId) {
+            const copied = await bot.api("copyMessage", {
+              chat_id: subscriber.userId,
+              from_chat_id: ownerId,
+              message_id: draftOrText.textMessageId,
+            });
+            if (draftOrText.buttons?.length) {
+              await bot.api("editMessageReplyMarkup", {
+                chat_id: subscriber.userId,
+                message_id: copied.message_id,
+                reply_markup: {
+                  inline_keyboard: draftOrText.buttons.map((button) => [{
+                    text: button.text,
+                    url: button.url,
+                    ...(draftOrText.style === "default" ? {} : { style: draftOrText.style }),
+                  }]),
+                },
+              });
+            }
+          }
+        }
+        sent++;
+      } catch {
+        failed++;
+      }
+    }
+    await sleep(50);
+  }
+  return { sent, failed };
+}
+
+module.exports = { registerAdminPanel, registerSubscriptionGate };
