@@ -106,6 +106,128 @@ test("SMM top-up receipt sends its Telegram file ID to admins", async () => {
   assert.match(replies.at(-1).text, /adminga yuborildi/);
 });
 
+test("SMM users use their own API credentials for services and orders", async () => {
+  const userDocs = new Map();
+  userDocs.set(88, { balance: 100000 });
+  userDocs.set(99, { balance: 100000 });
+  const orderDocs = [];
+  const users = {
+    createIndex: async () => "index",
+    findOne: async (filter) => userDocs.get(filter._id) || null,
+    updateOne: async (filter, update) => {
+      const exists = userDocs.has(filter._id);
+      const current = userDocs.get(filter._id) || {};
+      userDocs.set(filter._id, {
+        ...current,
+        ...(exists ? {} : update.$setOnInsert),
+        ...update.$set,
+      });
+      return { matchedCount: 1 };
+    },
+    findOneAndUpdate: async (filter, update) => {
+      const current = userDocs.get(filter._id);
+      if (!current || current.balance < filter.balance.$gte) return null;
+      const updated = { ...current, balance: current.balance + update.$inc.balance };
+      userDocs.set(filter._id, updated);
+      return updated;
+    },
+  };
+  const orders = {
+    createIndex: async () => "index",
+    insertOne: async (order) => {
+      orderDocs.push(order);
+      return { insertedId: orderDocs.length };
+    },
+  };
+  const topups = { createIndex: async () => "index" };
+  const requests = [];
+  const bot = new BotConstructor("test-token");
+  bot.config = { _id: 123456, ownerId: 77 };
+  registerSmmPanel(bot, {
+    SmmUsers: users,
+    SmmOrders: orders,
+    SmmTopups: topups,
+    encryptSecret: (value) => `encrypted:${value}`,
+    decryptSecret: (value) => value.replace(/^encrypted:/, ""),
+    fetch: async (url, options) => {
+      const params = new URLSearchParams(options.body);
+      const key = params.get("key");
+      requests.push({ url, key, action: params.get("action") });
+      const payload = params.get("action") === "services"
+        ? [{
+            service: key === "USER_KEY_A" ? 101 : 202,
+            name: key === "USER_KEY_A" ? "User A service" : "User B service",
+            category: "Category",
+            rate: 0.0001,
+            min: 100,
+            max: 10000,
+          }]
+        : { order: `provider-${key}` };
+      return { ok: true, json: async () => payload };
+    },
+  });
+  const replies = [];
+  bot.sendMessage = async (chatId, text, options) => {
+    replies.push({ chatId, text, options });
+    return { message_id: replies.length };
+  };
+  bot.api = async () => ({ message_id: 1 });
+  bot.editMessageText = async () => ({ message_id: 1 });
+
+  const sendCallback = async (userId, data) => {
+    const chat = { id: userId, type: "private" };
+    await bot.processUpdate({
+      callback_query: {
+        id: `${userId}-${data}`,
+        data,
+        from: { id: userId },
+        message: { chat, message_id: 1 },
+      },
+    });
+  };
+  const sendText = async (userId, text) => {
+    const chat = { id: userId, type: "private" };
+    await bot.processUpdate({
+      message: { chat, from: { id: userId }, text, message_id: 2 },
+    });
+  };
+
+  for (const [userId, suffix, key] of [
+    [88, "a", "USER_KEY_A"],
+    [99, "b", "USER_KEY_B"],
+  ]) {
+    await sendCallback(userId, "smmuserapi:url");
+    await sendText(userId, `https://provider-${suffix}.example/api/v2`);
+    await sendCallback(userId, "smmuserapi:key");
+    await sendText(userId, key);
+    await sendText(userId, "🛒 Buyurtma berish");
+    await sendCallback(userId, "cat:0:0");
+    await sendCallback(userId, `svc:${key === "USER_KEY_A" ? 101 : 202}`);
+    await sendText(userId, "https://example.com/post");
+    await sendText(userId, "100");
+    await sendCallback(userId, "order:confirm");
+  }
+
+  assert.equal(userDocs.get(88).smmApiKeyEncrypted, "encrypted:USER_KEY_A");
+  assert.equal(userDocs.get(99).smmApiKeyEncrypted, "encrypted:USER_KEY_B");
+  assert.deepEqual(orderDocs.map((order) => order.serviceId), [101, 202]);
+  assert.deepEqual(orderDocs.map((order) => order.providerApiUrl), [
+    "https://provider-a.example/api/v2",
+    "https://provider-b.example/api/v2",
+  ]);
+  assert.deepEqual(orderDocs.map((order) => order.providerApiKeyEncrypted), [
+    "encrypted:USER_KEY_A",
+    "encrypted:USER_KEY_B",
+  ]);
+  assert.deepEqual(requests.filter((request) => request.action === "add").map((request) => [
+    request.url,
+    request.key,
+  ]), [
+    ["https://provider-a.example/api/v2", "USER_KEY_A"],
+    ["https://provider-b.example/api/v2", "USER_KEY_B"],
+  ]);
+});
+
 test("bot constructor dispatches messages, photos, callbacks and middleware", async () => {
   const bot = new BotConstructor("test-token");
   const seen = [];

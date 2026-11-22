@@ -121,6 +121,8 @@ async function buildChild(doc) {
     SmmUsers: ConstructorDb.collection(`smm_users_${doc._id}`),
     SmmOrders: ConstructorDb.collection(`smm_orders_${doc._id}`),
     SmmTopups: ConstructorDb.collection(`smm_topups_${doc._id}`),
+    encryptSecret: encrypt,
+    decryptSecret: decrypt,
   });
   registerSubscriptionGate(child, { doc, Subs });
   registerAdminPanel(child, {
