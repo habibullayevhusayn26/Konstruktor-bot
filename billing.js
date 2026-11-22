@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const BOT_TYPES = ["qr", "nickname", "footer", "watermark", "file-editor", "image-text"];
+const BOT_TYPES = ["smm", "qr", "nickname", "footer", "watermark", "file-editor", "image-text"];
 
 const DEFAULT_BILLING_SETTINGS = Object.freeze({
   _id: "billing",

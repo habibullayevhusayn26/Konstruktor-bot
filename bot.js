@@ -87,7 +87,7 @@ const fullAdminRights = () => ({
 });
 
 let Bots, Users, Subs, FooterSettings, WatermarkProfiles;
-let PlatformSettings, Topups, BalanceTransactions, billingService;
+let PlatformSettings, Topups, BalanceTransactions, billingService, ConstructorDb;
 let constructorGate = null;
 const getConstructorGateChats = () => {
   if (!constructorGate) return [];
@@ -118,6 +118,9 @@ async function buildChild(doc) {
     Subs,
     Settings: FooterSettings,
     WatermarkProfiles,
+    SmmUsers: ConstructorDb.collection(`smm_users_${doc._id}`),
+    SmmOrders: ConstructorDb.collection(`smm_orders_${doc._id}`),
+    SmmTopups: ConstructorDb.collection(`smm_topups_${doc._id}`),
   });
   registerSubscriptionGate(child, { doc, Subs });
   registerAdminPanel(child, {
@@ -193,7 +196,9 @@ async function createBot(ownerId, botType, token) {
     ownerId,
     type: botType,
     welcome:
-      botType === "qr"
+      botType === "smm"
+        ? "Nakrutka/SMM xizmatlariga buyurtma berish botiga xush kelibsiz!"
+        : botType === "qr"
         ? "Matn yoki havola yuboring — QR-kod yarataman. QR-kodni rasm sifatida yuborsangiz, ichidagi matnni o'qiyman."
         : botType === "nickname"
           ? "Nickname yoki matn yuboring — 17 xil bezatilgan yozuv variantini tayyorlayman."
@@ -377,6 +382,7 @@ async function getOwned(ctx, id) {
 async function main() {
   const mother = new BotConstructor(TELEGRAM_BOT_TOKEN);
   await mother.connectDatabase(MONGODB_URI);
+  ConstructorDb = mother.db;
   Bots = mother.collection("bots");
   Users = mother.collection("users");
   Subs = mother.collection("subscribers");
@@ -1019,7 +1025,7 @@ async function main() {
     );
   });
 
-  cb(/^market:(qr|nickname|footer|watermark|file-editor|image-text)$/, async (ctx, match) => {
+  cb(/^market:([a-z-]+)$/, async (ctx, match) => {
     const botType = match[1];
     const definition = BOT_TYPES[botType];
     const settings = await getPlatformBilling();
@@ -1043,7 +1049,7 @@ async function main() {
     );
   });
 
-  cb(/^type:(qr|nickname|footer|watermark|file-editor|image-text)$/, async (ctx, match) => {
+  cb(/^type:([a-z-]+)$/, async (ctx, match) => {
     const botType = match[1];
     if (!BOT_TYPES[botType]) return;
     const settings = await getPlatformBilling();
@@ -1298,7 +1304,7 @@ async function main() {
     await show(ctx, ...await tariffPanel());
   }, true);
 
-  cb(/^adm_price:(qr|nickname|footer|watermark|file-editor|image-text)$/, async (ctx, match) => {
+  cb(/^adm_price:([a-z-]+)$/, async (ctx, match) => {
     const type = match[1];
     const settings = await getPlatformBilling();
     states.set(ctx.from.id, { type: "adm_price", botType: type });
@@ -1310,7 +1316,7 @@ async function main() {
     );
   }, true);
 
-  cb(/^adm_sample:(qr|nickname|footer|watermark|file-editor|image-text)$/, async (ctx, match) => {
+  cb(/^adm_sample:([a-z-]+)$/, async (ctx, match) => {
     const type = match[1];
     const settings = await getPlatformBilling();
     states.set(ctx.from.id, { type: "adm_sample", botType: type });
@@ -1323,7 +1329,7 @@ async function main() {
     );
   }, true);
 
-  cb(/^adm_toggle:(qr|nickname|footer|watermark|file-editor|image-text)$/, async (ctx, match) => {
+  cb(/^adm_toggle:([a-z-]+)$/, async (ctx, match) => {
     const settings = await getPlatformBilling();
     const type = match[1];
     settings.prices[type].enabled = !settings.prices[type].enabled;
@@ -1864,7 +1870,9 @@ async function main() {
             const doc = await createBot(uid, st.botType, ctx.text.trim());
             states.delete(uid);
             await ctx.reply(
-              doc.type === "footer"
+              doc.type === "smm"
+                ? "✅ Nakrutka/SMM bot yaratildi. 3 kunlik bepul sinov boshlandi. Provayder va karta sozlamalari uchun .env fayliga SMM_* qiymatlarini kiriting."
+                : doc.type === "footer"
                 ? "✅ Kanal footer boti yaratildi. 3 kunlik bepul sinov boshlandi. Bot ichida /start yuborib tag matni va kanalingizni sozlang."
                 : doc.type === "watermark"
                   ? "✅ Watermark bot yaratildi. 3 kunlik bepul sinov boshlandi. Bot ichida /start yuborib logo va rasm sozlamalarini tanlang."

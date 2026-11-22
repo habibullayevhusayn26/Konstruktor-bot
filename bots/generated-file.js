@@ -2,6 +2,11 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const BOT_TYPES = Object.freeze({
+  smm: {
+    label: "Nakrutka / SMM bot",
+    description: "Obunachi, layk, ko'rish va boshqa ijtimoiy tarmoq xizmatlarini so'mda buyurtma qilish.",
+    module: "smm-panel",
+  },
   qr: {
     label: "QR generator / scanner",
     description: "Matn yoki havoladan QR kod yarating va yuborilgan rasmdagi QR kodni o'qing.",

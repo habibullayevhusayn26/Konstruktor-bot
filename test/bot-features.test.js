@@ -1073,6 +1073,7 @@ test("subscription gate blocks non-members and lets members continue", async () 
 
 test("each bot instance gets the correct token-free JavaScript file", async () => {
   for (const [type, moduleName] of [
+    ["smm", "smm-panel"],
     ["qr", "qr-generator"],
     ["nickname", "nickname-font"],
     ["footer", "channel-footer"],
