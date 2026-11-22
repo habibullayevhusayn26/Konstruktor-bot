@@ -90,15 +90,18 @@ function registerSmmPanel(bot, options = {}) {
   const priceOf = (service, quantity) =>
     Math.ceil((per1000(service) * quantity) / 1000);
   const replyKeyboard = (userId) => ({
-    resize_keyboard: true,
-    keyboard: [
-      [{ text: "🛒 Buyurtma berish" }, { text: "📦 Buyurtmalarim" }],
-      [{ text: "💰 Balans" }, { text: "💳 Hisobni to‘ldirish" }],
-      [
-        { text: "☎️ Aloqa" },
-        ...(admins.has(userId) ? [{ text: "🛠 SMM admin" }] : []),
+    reply_markup: {
+      resize_keyboard: true,
+      is_persistent: true,
+      keyboard: [
+        [{ text: "🛒 Buyurtma berish" }, { text: "📦 Buyurtmalarim" }],
+        [{ text: "💰 Balans" }, { text: "💳 Hisobni to‘ldirish" }],
+        [
+          { text: "☎️ Aloqa" },
+          ...(admins.has(userId) ? [{ text: "🛠 SMM admin" }] : []),
+        ],
       ],
-    ],
+    },
   });
 
   bot.command("start", async (ctx) => {

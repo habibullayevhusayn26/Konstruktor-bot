@@ -22,6 +22,7 @@ const { createWatermarkedImage } = require("../bots/watermark");
 const registerFileEditor = require("../bots/file-editor");
 const registerImageTextEditor = require("../bots/image-text-editor");
 const { replaceTemplateTitle } = require("../bots/image-text-editor");
+const registerSmmPanel = require("../bots/smm-panel");
 const {
   isMp3,
   mp3Filename,
@@ -35,6 +36,37 @@ const {
   removeGeneratedBotFile,
   writeGeneratedBotFile,
 } = require("../bots/generated-file");
+
+test("SMM panel start sends a visible reply keyboard", async () => {
+  const collection = {
+    createIndex: async () => "index",
+  };
+  const bot = new BotConstructor("test-token");
+  bot.config = { _id: 123456, ownerId: 77, welcome: "Nakrutka/SMM xush kelibsiz" };
+  registerSmmPanel(bot, {
+    SmmUsers: collection,
+    SmmOrders: collection,
+    SmmTopups: collection,
+    Bots: collection,
+  });
+
+  const replies = [];
+  bot.sendMessage = async (chatId, text, options) =>
+    replies.push({ chatId, text, options });
+
+  await bot.processUpdate({
+    message: {
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "/start",
+    },
+  });
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, "Nakrutka/SMM xush kelibsiz");
+  assert.equal(replies[0].options.reply_markup.resize_keyboard, true);
+  assert.equal(replies[0].options.reply_markup.keyboard[0][0].text, "🛒 Buyurtma berish");
+});
 
 test("bot constructor dispatches messages, photos, callbacks and middleware", async () => {
   const bot = new BotConstructor("test-token");
