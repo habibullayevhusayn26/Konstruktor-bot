@@ -22,18 +22,46 @@ const isMember = (member) =>
   member.status === "member" ||
   (member.status === "restricted" && member.is_member);
 
+function getRequiredChannels(config = {}) {
+  const channels = Array.isArray(config.requiredChannels)
+    ? config.requiredChannels
+    : [];
+  if (!channels.length && config.requiredChannel) {
+    channels.push({
+      chatId: config.requiredChannel,
+      title: config.requiredChannelTitle || String(config.requiredChannel),
+      link: config.requiredChannelLink || "",
+    });
+  }
+  return channels.filter((channel) => channel?.chatId);
+}
+
 function panelMarkup(doc) {
-  const channel = doc.requiredChannelTitle || "Sozlanmagan";
+  const channels = getRequiredChannels(doc);
+  const count = channels.length;
   return {
     reply_markup: {
       inline_keyboard: [
         [{ text: "📊 Statistika", callback_data: "admin:stats" }],
         [{ text: "✏️ Salomlashuv matni", callback_data: "admin:welcome" }],
         [{ text: "📢 Obunachilarga xabar", callback_data: "admin:broadcast" }],
-        [{ text: `🔒 Majburiy obuna: ${channel.slice(0, 35)}`, callback_data: "admin:channel" }],
-        ...(doc.requiredChannel
-          ? [[{ text: "Kanal talabini o'chirish", callback_data: "admin:channel:off" }]]
-          : []),
+        [{ text: `🔒 Majburiy obunalar: ${count}`, callback_data: "admin:channel" }],
+        ...channels.map((channel, index) => [
+          {
+            text: `${index + 1}. ${String(channel.title).slice(0, 38)}`,
+            callback_data: `admin:channel:open:${index}`,
+          },
+          {
+            text: "❌",
+            callback_data: `admin:channel:remove:${index}`,
+          },
+        ]),
+        ...(count
+          ? [[
+              { text: "➕ Yana qo'shish", callback_data: "admin:channel" },
+              { text: "🗑️ Hammasini o'chirish", callback_data: "admin:channel:off" },
+            ]]
+          : [[{ text: "➕ Kanal yoki guruh qo'shish", callback_data: "admin:channel" }]]),
       ],
     },
   };
@@ -87,7 +115,8 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
       return;
     }
 
-    if (!bot.config.requiredChannel) {
+    const requiredChannels = getRequiredChannels(bot.config);
+    if (!requiredChannels.length) {
       try {
         await persistSubscriber(ctx);
       } catch (error) {
@@ -97,10 +126,11 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
     }
 
     ctx.handled = true;
+    const cacheKey = requiredChannels.map((channel) => String(channel.chatId)).sort().join(",");
     const cachedMember = memberCache.get(ctx.from.id);
     if (
       cachedMember &&
-      String(cachedMember.channelId) === String(bot.config.requiredChannel) &&
+      cachedMember.cacheKey === cacheKey &&
       cachedMember.expiresAt > Date.now()
     ) {
       try {
@@ -111,30 +141,28 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
       ctx.handled = false;
       return;
     }
-
-    let member;
-    try {
-      member = await bot.api("getChatMember", {
-        chat_id: bot.config.requiredChannel,
-        user_id: ctx.from.id,
-      });
-    } catch (error) {
-      console.error(`@${doc.username} kanal obunasini tekshirib bo'lmadi:`, error.message);
-      if (ctx.callbackQuery) {
-        await ctx.answer({ text: "Obunani tekshirishda xato. Qayta urinib ko'ring." }).catch(() => {});
+    const missingChannels = [];
+    for (const channel of requiredChannels) {
+      try {
+        const member = await bot.api("getChatMember", {
+          chat_id: channel.chatId,
+          user_id: ctx.from.id,
+        });
+        if (!isMember(member)) missingChannels.push(channel);
+      } catch (error) {
+        console.error(`@${doc.username} ${channel.title} obunasini tekshirib bo'lmadi:`, error.message);
+        missingChannels.push(channel);
       }
-      await ctx.reply("Obunani hozir tekshirib bo'lmadi. Keyinroq qayta urinib ko'ring.");
-      return;
     }
 
-    if (isMember(member)) {
+    if (!missingChannels.length) {
       try {
         await persistSubscriber(ctx);
       } catch (error) {
         console.error(`@${doc.username} obunachisini saqlab bo'lmadi:`, error.message);
       }
       memberCache.set(ctx.from.id, {
-        channelId: bot.config.requiredChannel,
+        cacheKey,
         expiresAt: Date.now() + 5000,
       });
       if (memberCache.size > 2000) {
@@ -148,11 +176,14 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
       await ctx.answer({ text: "Avval kanalga obuna bo'ling." }).catch(() => {});
     }
     await ctx.reply(
-      "Botdan foydalanish uchun avval kanalga obuna bo'ling, so'ng tekshirish tugmasini bosing.",
+      "Botdan foydalanish uchun barcha majburiy kanallar/guruhlarga obuna bo'ling:",
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "📢 Kanalga obuna bo'lish", url: bot.config.requiredChannelLink }],
+            ...missingChannels.map((channel, index) => [{
+              text: `📢 ${index + 1}. ${String(channel.title).slice(0, 45)}`,
+              url: channel.link,
+            }]),
             [{ text: "✅ Obunani tekshirish", callback_data: "join:check" }],
           ],
         },
@@ -165,9 +196,13 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
   let pendingAction = null;
   let broadcastDraft = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
-  const panelText = () =>
-    `🛠 @${doc.username} botining admin paneli\n` +
-    `Majburiy obuna: ${doc.requiredChannelTitle || "Sozlanmagan"}`;
+  const panelText = () => {
+    const channels = getRequiredChannels(doc);
+    const lines = channels.length
+      ? channels.map((channel, index) => `${index + 1}. ${channel.title}`).join("\n")
+      : "Sozlanmagan";
+    return `🛠 @${doc.username} botining admin paneli\n\n🔒 Majburiy obunalar:\n${lines}`;
+  };
   const attachSelectedChat = async (ctx, chatRef) => {
     try {
       await setRequiredChannel(bot, Bots, doc, chatRef);
@@ -383,9 +418,26 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|channel:off)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
+
+    const removeMatch = ctx.text.match(/^admin:channel:remove:(\d+)$/);
+    if (removeMatch) {
+      const index = Number(removeMatch[1]);
+      const channels = getRequiredChannels(doc);
+      if (index >= 0 && index < channels.length) {
+        channels.splice(index, 1);
+        await Bots.updateOne(
+          { _id: doc._id, ownerId: doc.ownerId },
+          { $set: { requiredChannels: channels } },
+        );
+        doc.requiredChannels = channels;
+        bot.config.requiredChannels = channels;
+      }
+      await ctx.edit(panelText(), panelMarkup(doc));
+      return;
+    }
 
     switch (ctx.text) {
       case "admin:stats": {
@@ -458,6 +510,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
         await Bots.updateOne(
           { _id: doc._id, ownerId: doc.ownerId },
           {
+            $set: { requiredChannels: [] },
             $unset: {
               requiredChannel: "",
               requiredChannelTitle: "",
@@ -465,11 +518,13 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
             },
           },
         );
+        doc.requiredChannels = [];
         delete bot.config.requiredChannel;
         delete bot.config.requiredChannelTitle;
         delete bot.config.requiredChannelLink;
+        bot.config.requiredChannels = [];
         pendingAction = null;
-        await ctx.edit(panelText(), panelMarkup(doc));
+        await ctx.reply("Barcha majburiy obunalar o'chirildi.", panelMarkup(doc));
         break;
     }
   });
@@ -599,16 +654,21 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
 
   bot.onCallbackData(/^join:check$/, async (ctx) => {
     await ctx.answer();
-    if (!bot.config.requiredChannel) {
-      await ctx.edit("Majburiy kanal sozlanmagan. /start ni bosing.");
+    const channels = getRequiredChannels(bot.config);
+    if (!channels.length) {
+      await ctx.edit("Majburiy obuna sozlanmagan. /start ni bosing.");
       return;
     }
     try {
-      const member = await bot.api("getChatMember", {
-        chat_id: bot.config.requiredChannel,
-        user_id: ctx.from.id,
-      });
-      if (isMember(member)) {
+      const missing = [];
+      for (const channel of channels) {
+        const member = await bot.api("getChatMember", {
+          chat_id: channel.chatId,
+          user_id: ctx.from.id,
+        });
+        if (!isMember(member)) missing.push(channel);
+      }
+      if (!missing.length) {
         await Subs.updateOne(
           { botId: doc._id, userId: ctx.from.id },
           { $setOnInsert: { createdAt: new Date() } },
@@ -616,10 +676,13 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
         );
         await ctx.edit("Obuna tasdiqlandi. Botdan foydalanish uchun /start bosing.");
       } else {
-        await ctx.edit("Kanalga obuna bo'ling, so'ng yana tekshiring.", {
+        await ctx.edit("Barcha majburiy obunalarga qo'shiling, so'ng yana tekshiring.", {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "📢 Kanalga obuna bo'lish", url: bot.config.requiredChannelLink }],
+              ...missing.map((channel) => [{
+                text: `📢 ${String(channel.title).slice(0, 45)}`,
+                url: channel.link,
+              }]),
               [{ text: "✅ Qayta tekshirish", callback_data: "join:check" }],
             ],
           },
@@ -650,15 +713,26 @@ async function setRequiredChannel(bot, Bots, doc, channelInput) {
     link = await bot.api("exportChatInviteLink", { chat_id: chat.id });
   }
 
+  const channel = {
+    chatId: chat.id,
+    title: chat.title || chat.username || String(chat.id),
+    link,
+  };
+  const channels = getRequiredChannels(doc).filter(
+    (item) => String(item.chatId) !== String(chat.id),
+  );
+  channels.push(channel);
   const update = {
+    requiredChannels: channels,
     requiredChannel: chat.id,
-    requiredChannelTitle: chat.title || chat.username || String(chat.id),
+    requiredChannelTitle: channel.title,
     requiredChannelLink: link,
   };
   await Bots.updateOne(
     { _id: doc._id, ownerId: doc.ownerId },
     { $set: update },
   );
+  doc.requiredChannels = channels;
   Object.assign(bot.config, update);
 }
 
@@ -667,20 +741,23 @@ async function broadcast(bot, Subs, botId, draftOrText, ownerId) {
   let failed = 0;
   for await (const subscriber of Subs.find({ botId })) {
     let shouldSend = true;
-    if (bot.config.requiredChannel) {
+    const channels = getRequiredChannels(bot.config);
+    for (const channel of channels) {
       try {
         const member = await bot.api("getChatMember", {
-          chat_id: bot.config.requiredChannel,
+          chat_id: channel.chatId,
           user_id: subscriber.userId,
         });
         if (!isMember(member)) {
           await Subs.deleteOne({ botId, userId: subscriber.userId });
           shouldSend = false;
+          break;
         }
       } catch (error) {
         failed++;
-        console.error("Obunachining kanal a'zoligini tekshirib bo'lmadi:", error.message);
+        console.error("Obunachining majburiy chat a'zoligini tekshirib bo'lmadi:", error.message);
         shouldSend = false;
+        break;
       }
     }
 

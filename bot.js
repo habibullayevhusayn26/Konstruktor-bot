@@ -89,6 +89,14 @@ const fullAdminRights = () => ({
 let Bots, Users, Subs, FooterSettings, WatermarkProfiles;
 let PlatformSettings, Topups, BalanceTransactions, billingService;
 let constructorGate = null;
+const getConstructorGateChats = () => {
+  if (!constructorGate) return [];
+  if (Array.isArray(constructorGate.chats)) return constructorGate.chats;
+  if (constructorGate.chatId) {
+    return [{ chatId: constructorGate.chatId, title: constructorGate.title, link: constructorGate.link }];
+  }
+  return [];
+};
 const children = new Map(); // botId -> BotConstructor (ishlayotgan mijoz botlari)
 const childPolls = new Set();
 const states = new Map(); // userId -> kutilayotgan kiritish holati
@@ -582,28 +590,36 @@ async function main() {
       return;
     }
     if (ctx.chat?.type !== "private") return;
-    if (!isAdmin(userId) && constructorGate?.chatId) {
-      try {
-        const member = await mother.api("getChatMember", {
-          chat_id: constructorGate.chatId,
-          user_id: userId,
-        });
-        const isMember = ["creator", "administrator", "member"].includes(member.status) ||
-          (member.status === "restricted" && member.is_member);
-        if (!isMember) {
+    const constructorGateChats = getConstructorGateChats();
+    if (!isAdmin(userId) && constructorGateChats.length) {
+      const missingChats = [];
+      for (const chat of constructorGateChats) {
+        try {
+          const member = await mother.api("getChatMember", {
+            chat_id: chat.chatId,
+            user_id: userId,
+          });
+          const isMember = ["creator", "administrator", "member"].includes(member.status) ||
+            (member.status === "restricted" && member.is_member);
+          if (!isMember) missingChats.push(chat);
+        } catch (error) {
+          missingChats.push(chat);
+        }
+      }
+      if (missingChats.length) {
           ctx.handled = true;
           await ctx.reply(
-            "Botdan foydalanish uchun avval majburiy kanal yoki guruhga obuna bo'ling:",
+            "Botdan foydalanish uchun barcha majburiy kanal va guruhlarga obuna bo'ling:",
             kb([
-              [{ text: "📢 Obuna bo'lish", url: constructorGate.link }],
+              ...missingChats.map((chat, index) => [{
+                text: `📢 ${index + 1}. ${String(chat.title).slice(0, 45)}`,
+                url: chat.link,
+              }]),
               [{ text: "✅ Obunani tekshirish", callback_data: "constructor_gate_check" }],
             ]),
           );
           return;
         }
-      } catch (error) {
-        console.error("Konstruktor majburiy obunasini tekshirib bo'lmadi:", error.message);
-      }
     }
     const name = ctx.from.first_name;
     const username = ctx.from.username || null;
@@ -763,10 +779,20 @@ async function main() {
             link = `tg://resolve?domain=`;
           }
         }
-        constructorGate = {
+        const selectedChat = {
           chatId: chat.id,
           title: chat.title || chat.username || String(chat.id),
           link,
+        };
+        const chats = getConstructorGateChats().filter(
+          (item) => String(item.chatId) !== String(chat.id),
+        );
+        chats.push(selectedChat);
+        constructorGate = {
+          chats,
+          chatId: selectedChat.chatId,
+          title: selectedChat.title,
+          link: selectedChat.link,
         };
         await PlatformSettings.updateOne(
           { _id: "constructor_gate" },
@@ -1174,8 +1200,12 @@ async function main() {
 
   cb(/^adm_gate$/, async (ctx) => {
     states.set(ctx.from.id, { type: "adm_gate_select" });
+    const chats = getConstructorGateChats();
+    const list = chats.length
+      ? chats.map((chat, index) => `${index + 1}. ${chat.title}`).join("\n")
+      : "Sozlanmagan";
     await ctx.reply(
-      `Majburiy obuna: ${constructorGate?.title || "sozlanmagan"}\nKanal yoki guruhni tanlang:`,
+      `Majburiy obunalar:\n${list}\n\nYana kanal yoki guruh qo'shing:`,
       {
         reply_markup: {
           resize_keyboard: true,
@@ -1210,23 +1240,28 @@ async function main() {
   cb(/^adm_gate_off$/, async (ctx) => {
     await PlatformSettings.updateOne(
       { _id: "constructor_gate" },
-      { $set: { chatId: null, title: "", link: "" } },
+      { $set: { chats: [], chatId: null, title: "", link: "" } },
       { upsert: true },
     );
-    constructorGate = null;
+    constructorGate = { chats: [] };
     await show(ctx, "Majburiy obuna o'chirildi.", kb([back("adm")]));
   }, true);
 
   cb(/^constructor_gate_check$/, async (ctx) => {
-    if (!constructorGate?.chatId) return show(ctx, "Majburiy obuna sozlanmagan.", kb([back("menu")]));
+    const chats = getConstructorGateChats();
+    if (!chats.length) return show(ctx, "Majburiy obuna sozlanmagan.", kb([back("menu")]));
     try {
-      const member = await mother.api("getChatMember", {
-        chat_id: constructorGate.chatId,
-        user_id: ctx.from.id,
-      });
-      const joined = ["creator", "administrator", "member"].includes(member.status) ||
-        (member.status === "restricted" && member.is_member);
-      if (joined) {
+      const missing = [];
+      for (const chat of chats) {
+        const member = await mother.api("getChatMember", {
+          chat_id: chat.chatId,
+          user_id: ctx.from.id,
+        });
+        const joined = ["creator", "administrator", "member"].includes(member.status) ||
+          (member.status === "restricted" && member.is_member);
+        if (!joined) missing.push(chat);
+      }
+      if (!missing.length) {
         states.delete(ctx.from.id);
         await show(ctx, "✅ Obuna tasdiqlandi.", kb([back("menu")]));
       } else {
