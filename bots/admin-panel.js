@@ -218,6 +218,11 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
       ctx.text?.trim()
     ) {
       ctx.handled = true;
+      const chatInput = ctx.text.trim();
+      if (!/^@[\w]{4,}$/.test(chatInput) && !/^-\d+$/.test(chatInput)) {
+        await ctx.reply("Iltimos, 📢 Kanal yoki 👥 Guruh tanlash tugmasidan foydalaning.");
+        return;
+      }
       try {
         await setRequiredChannel(bot, Bots, doc, ctx.text.trim());
         pendingAction = null;
@@ -363,6 +368,10 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
     }
 
     if (action === "channel") {
+      if (!/^@[\w]{4,}$/.test(ctx.text.trim()) && !/^-\d+$/.test(ctx.text.trim())) {
+        await ctx.reply("Iltimos, 📢 Kanal yoki 👥 Guruh tanlash tugmasidan foydalaning.");
+        return;
+      }
       try {
         await setRequiredChannel(bot, Bots, doc, ctx.text.trim());
         pendingAction = null;
