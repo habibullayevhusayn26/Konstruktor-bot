@@ -1,5 +1,7 @@
 "use strict";
 
+const { ObjectId } = require("mongodb");
+
 const som = (n) => `${Math.round(Number(n) || 0).toLocaleString("uz-UZ")} so'm`;
 const short = (value, length) => {
   const text = String(value || "");
@@ -11,17 +13,18 @@ function registerSmmPanel(bot, options = {}) {
   const Users = options.SmmUsers;
   const Orders = options.SmmOrders;
   const Topups = options.SmmTopups;
+  const Bots = options.Bots;
   if (!Users || !Orders || !Topups) {
     throw new Error("SMM bot uchun MongoDB kolleksiyalari sozlanmagan.");
   }
 
   const env = process.env;
-  const apiUrl = bot.config.smmApiUrl || env.SMM_API_URL || "";
-  const apiKey = bot.config.smmApiKey || env.SMM_API_KEY || "";
-  const usdRate = Number(bot.config.smmUsdRate || env.SMM_USD_RATE || 12700);
-  const markup = Number(bot.config.smmMarkupPercent || env.SMM_MARKUP_PERCENT || 30);
-  const card = bot.config.smmCardNumber || env.SMM_CARD_NUMBER || "0000 0000 0000 0000";
-  const cardOwner = bot.config.smmCardOwner || env.SMM_CARD_OWNER || "";
+  let apiUrl = bot.config.smmApiUrl || env.SMM_API_URL || "";
+  let apiKey = bot.config.smmApiKey || env.SMM_API_KEY || "";
+  let usdRate = Number(bot.config.smmUsdRate || env.SMM_USD_RATE || 12700);
+  let markup = Number(bot.config.smmMarkupPercent || env.SMM_MARKUP_PERCENT || 30);
+  let card = bot.config.smmCardNumber || env.SMM_CARD_NUMBER || "0000 0000 0000 0000";
+  let cardOwner = bot.config.smmCardOwner || env.SMM_CARD_OWNER || "";
   const states = new Map();
   const admins = new Set((env.ADMIN_IDS || "").split(",").map((id) => Number(id)).filter(Boolean));
   if (bot.config.ownerId) admins.add(Number(bot.config.ownerId));
@@ -29,13 +32,34 @@ function registerSmmPanel(bot, options = {}) {
   let services = new Map();
   let categories = [];
 
+  Users.createIndex({ botId: 1, _id: 1 }).catch(() => {});
+  Orders.createIndex({ botId: 1, final: 1 }).catch(() => {});
+  Orders.createIndex({ botId: 1, userId: 1, createdAt: -1 }).catch(() => {});
+  Topups.createIndex({ botId: 1, status: 1 }).catch(() => {});
+
   async function smm(params) {
     if (!apiUrl || !apiKey) throw new Error("Provayder API hali sozlanmagan.");
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      body: new URLSearchParams({ key: apiKey, ...params }),
-    });
-    const data = await response.json();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+      response = await fetch(apiUrl, {
+        method: "POST",
+        body: new URLSearchParams({ key: apiKey, ...params }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error.name === "AbortError") throw new Error("Provayder javobi 20 soniyada kelmadi.");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("Provayder javobi noto'g'ri formatda.");
+    }
     if (!response.ok || data?.error) throw new Error(data?.error || "Provayder xatosi.");
     return data;
   }
@@ -65,26 +89,92 @@ function registerSmmPanel(bot, options = {}) {
   const per1000 = (service) => service.rate * (1 + markup / 100) * usdRate;
   const priceOf = (service, quantity) =>
     Math.ceil((per1000(service) * quantity) / 1000);
-  const replyKeyboard = {
+  const replyKeyboard = (userId) => ({
     resize_keyboard: true,
     keyboard: [
       [{ text: "🛒 Buyurtma berish" }, { text: "📦 Buyurtmalarim" }],
       [{ text: "💰 Balans" }, { text: "💳 Hisobni to‘ldirish" }],
-      [{ text: "☎️ Aloqa" }],
+      [
+        { text: "☎️ Aloqa" },
+        ...(admins.has(userId) ? [{ text: "🛠 SMM admin" }] : []),
+      ],
     ],
-  };
+  });
 
   bot.command("start", async (ctx) => {
     states.delete(ctx.from.id);
     await ctx.reply(
       bot.config.welcome || "SMM xizmatlariga buyurtma berish botiga xush kelibsiz!",
-      replyKeyboard,
+      replyKeyboard(ctx.from.id),
     );
   });
 
   bot.command("cancel", async (ctx) => {
     states.delete(ctx.from.id);
-    await ctx.reply("Amal bekor qilindi.", replyKeyboard);
+    await ctx.reply("Amal bekor qilindi.", replyKeyboard(ctx.from.id));
+  });
+
+  async function saveConfig(update) {
+    if (!Bots) return;
+    await Bots.updateOne({ _id: botId }, { $set: update });
+  }
+
+  async function showAdmin(ctx) {
+    if (!admins.has(ctx.from.id)) return;
+    const pending = await Topups.countDocuments({ botId, status: "pending" });
+    const users = await Users.countDocuments({ botId });
+    const orders = await Orders.countDocuments({ botId });
+    await ctx.reply(
+      `🛠 SMM admin panel\n\n👥 Foydalanuvchilar: ${users}\n📦 Buyurtmalar: ${orders}\n💳 Kutilayotgan to‘lovlar: ${pending}\n\nProvayder: ${apiUrl ? "sozlangan" : "sozlanmagan"}\nKurs: 1 USD = ${som(usdRate)}\nUstama: ${markup}%`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "📊 To‘liq statistika", callback_data: "smmadmin:stats" }],
+            [{ text: "🔄 Xizmatlarni yangilash", callback_data: "smmadmin:reload" }],
+            [{ text: "🌐 API havolasi", callback_data: "smmadmin:url" }, { text: "🔑 API kaliti", callback_data: "smmadmin:key" }],
+            [{ text: "💱 USD kursi", callback_data: "smmadmin:rate" }, { text: "📈 Ustama foizi", callback_data: "smmadmin:markup" }],
+            [{ text: "🏦 Karta raqami", callback_data: "smmadmin:card" }, { text: "👤 Karta egasi", callback_data: "smmadmin:cardowner" }],
+          ],
+        },
+      },
+    );
+  }
+
+  bot.command("admin", showAdmin);
+  bot.onText(/^🛠 SMM admin$/i, showAdmin);
+
+  bot.onCallbackData(/^smmadmin:(stats|reload|url|key|rate|markup|card|cardowner)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (!admins.has(ctx.from.id)) return;
+    const action = match[1];
+    if (action === "stats") {
+      const [users, orders, topups, revenue] = await Promise.all([
+        Users.countDocuments({ botId }),
+        Orders.countDocuments({ botId }),
+        Topups.countDocuments({ botId, status: "approved" }),
+        Orders.aggregate([{ $match: { botId } }, { $group: { _id: null, sum: { $sum: "$charge" } } }]).toArray(),
+      ]);
+      return ctx.reply(`📊 SMM statistika\n\nFoydalanuvchilar: ${users}\nBuyurtmalar: ${orders}\nTasdiqlangan to‘lovlar: ${topups}\nJami buyurtma aylanmasi: ${som(revenue[0]?.sum || 0)}`);
+    }
+    if (action === "reload") {
+      try {
+        await loadServices(true);
+        await ctx.reply(`✅ Xizmatlar yangilandi: ${services.size} ta.`);
+      } catch (error) {
+        await ctx.reply(`❌ Yangilab bo‘lmadi: ${error.message}`);
+      }
+      return;
+    }
+    const prompts = {
+      url: "Yangi SMM API havolasini yuboring:",
+      key: "Yangi SMM API kalitini yuboring:",
+      rate: "1 USD kursini so'mda yuboring:",
+      markup: "Narx ustamasini foizda yuboring:",
+      card: "Qabul qilish karta raqamini yuboring:",
+      cardowner: "Karta egasi nomini yuboring:",
+    };
+    states.set(ctx.from.id, { step: `admin_${action}` });
+    await ctx.reply(prompts[action]);
   });
 
   bot.onText(/^💰 Balans$/i, async (ctx) => {
@@ -113,7 +203,7 @@ function registerSmmPanel(bot, options = {}) {
     try {
       await Users.updateOne(
         { _id: ctx.from.id },
-        { $set: { name: ctx.from.first_name, username: ctx.from.username || null }, $setOnInsert: { balance: 0 } },
+        { $set: { botId, name: ctx.from.first_name, username: ctx.from.username || null }, $setOnInsert: { balance: 0 } },
         { upsert: true },
       );
       await loadServices();
@@ -131,7 +221,7 @@ function registerSmmPanel(bot, options = {}) {
   });
 
   bot.onCallbackData(/^cat:(\d+):(\d+)$/, async (ctx, match) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answer();
     const category = categories[Number(match[1])];
     if (!category) return ctx.reply("Ro'yxat yangilangan, qaytadan tanlang.");
     const page = Number(match[2]);
@@ -147,7 +237,7 @@ function registerSmmPanel(bot, options = {}) {
   });
 
   bot.onCallbackData(/^cats$/, async (ctx) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answer();
     await ctx.edit("Kategoriyani tanlang:", {
       reply_markup: {
         inline_keyboard: categories.map((category, index) =>
@@ -158,7 +248,7 @@ function registerSmmPanel(bot, options = {}) {
   });
 
   bot.onCallbackData(/^svc:(\d+)$/, async (ctx, match) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answer();
     const service = services.get(Number(match[1]));
     if (!service) return ctx.reply("Xizmat topilmadi.");
     states.set(ctx.from.id, { step: "link", serviceId: service.id });
@@ -172,6 +262,45 @@ function registerSmmPanel(bot, options = {}) {
     if (!text || text.startsWith("/")) return;
     const state = states.get(ctx.from.id);
     if (!state) return;
+
+    if (state.step?.startsWith("admin_") && admins.has(ctx.from.id)) {
+      const action = state.step.slice(6);
+      states.delete(ctx.from.id);
+      try {
+        if (action === "url") {
+          if (!/^https?:\/\//i.test(text)) throw new Error("API havolasi http:// yoki https:// bilan boshlansin.");
+          apiUrl = text;
+          await saveConfig({ smmApiUrl: apiUrl });
+        } else if (action === "key") {
+          if (text.length < 8) throw new Error("API kaliti juda qisqa.");
+          apiKey = text;
+          await saveConfig({ smmApiKey: apiKey });
+        } else if (action === "rate") {
+          const value = Number(text.replace(/[^\d.]/g, ""));
+          if (!Number.isFinite(value) || value <= 0) throw new Error("USD kursi musbat son bo'lsin.");
+          usdRate = value;
+          await saveConfig({ smmUsdRate: usdRate });
+        } else if (action === "markup") {
+          const value = Number(text.replace(/[^\d.-]/g, ""));
+          if (!Number.isFinite(value) || value < 0 || value > 500) throw new Error("Ustama 0–500% oralig'ida bo'lsin.");
+          markup = value;
+          await saveConfig({ smmMarkupPercent: markup });
+        } else if (action === "card") {
+          const value = text.replace(/\D/g, "");
+          if (value.length < 12 || value.length > 23) throw new Error("Karta raqami noto'g'ri.");
+          card = text;
+          await saveConfig({ smmCardNumber: card });
+        } else if (action === "cardowner") {
+          if (text.length < 2 || text.length > 80) throw new Error("Karta egasi nomi noto'g'ri.");
+          cardOwner = text;
+          await saveConfig({ smmCardOwner: cardOwner });
+        }
+        await ctx.reply("✅ Sozlama saqlandi.", replyKeyboard(ctx.from.id));
+      } catch (error) {
+        await ctx.reply(`❌ ${error.message}`, replyKeyboard(ctx.from.id));
+      }
+      return;
+    }
 
     if (state.step === "topup_amount") {
       const amount = Number(text.replace(/[^\d]/g, ""));
@@ -240,23 +369,25 @@ function registerSmmPanel(bot, options = {}) {
         },
       }).catch(() => {});
     }
-    await ctx.reply("Chek adminga yuborildi. Tasdiqlangach balans to‘ldiriladi.", replyKeyboard);
+    await ctx.reply("Chek adminga yuborildi. Tasdiqlangach balans to‘ldiriladi.", replyKeyboard(ctx.from.id));
   });
 
   bot.onCallbackData(/^topup:(ok|no):(.+)$/, async (ctx, match) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answer();
     if (!admins.has(ctx.from.id)) return;
-    const { ObjectId } = require("mongodb");
     let id;
     try {
       id = new ObjectId(match[2]);
     } catch {
       return ctx.reply("To‘lov ID noto‘g‘ri.");
     }
-    const topup = await Topups.findOne({ _id: id, status: "pending" });
-    if (!topup) return ctx.reply("Bu to‘lov so‘rovi allaqachon ko‘rilgan.");
     const approved = match[1] === "ok";
-    await Topups.updateOne({ _id: id }, { $set: { status: approved ? "approved" : "rejected" } });
+    const topup = await Topups.findOneAndUpdate(
+      { _id: id, botId, status: "pending" },
+      { $set: { status: approved ? "approved" : "rejected", reviewedBy: ctx.from.id, reviewedAt: new Date() } },
+      { returnDocument: "after" },
+    );
+    if (!topup) return ctx.reply("Bu to‘lov so‘rovi allaqachon ko‘rilgan.");
     if (approved) {
       await Users.updateOne(
         { _id: topup.ownerId },
@@ -270,11 +401,11 @@ function registerSmmPanel(bot, options = {}) {
   });
 
   bot.onCallbackData(/^order:(confirm|cancel)$/, async (ctx, match) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answer();
     const state = states.get(ctx.from.id);
     if (!state || state.step !== "confirm") return ctx.reply("Sessiya tugagan. Buyurtmani qaytadan boshlang.");
     states.delete(ctx.from.id);
-    if (match[1] === "cancel") return ctx.reply("Buyurtma bekor qilindi.", replyKeyboard);
+    if (match[1] === "cancel") return ctx.reply("Buyurtma bekor qilindi.", replyKeyboard(ctx.from.id));
 
     const paid = await Users.findOneAndUpdate(
       { _id: ctx.from.id, balance: { $gte: state.price } },
@@ -299,12 +430,80 @@ function registerSmmPanel(bot, options = {}) {
         final: false,
         createdAt: new Date(),
       });
-      await ctx.reply(`✅ Buyurtma qabul qilindi.\n№ ${result.order}\nNarx: ${som(state.price)}`, replyKeyboard);
+      await ctx.reply(`✅ Buyurtma qabul qilindi.\n№ ${result.order}\nNarx: ${som(state.price)}`, replyKeyboard(ctx.from.id));
     } catch (error) {
       await Users.updateOne({ _id: ctx.from.id }, { $inc: { balance: state.price } });
       await ctx.reply(`❌ Buyurtma rad qilindi. Pul balansingizga qaytarildi.\n${error.message}`);
     }
   });
+
+  const STATUS_UZ = {
+    Pending: "⏳ Kutilmoqda",
+    Processing: "⚙️ Qayta ishlanmoqda",
+    "In progress": "🚀 Bajarilmoqda",
+    Completed: "✅ Bajarildi",
+    Partial: "⚠️ Qisman bajarildi",
+    Canceled: "❌ Bekor qilindi",
+    Refunded: "↩️ Qaytarildi",
+  };
+  const FINAL_STATUSES = new Set(["Completed", "Partial", "Canceled", "Refunded"]);
+
+  async function pollOrders() {
+    if (!apiUrl || !apiKey) return;
+    const openOrders = await Orders.find({ botId, final: { $ne: true } }).limit(100).toArray();
+    if (!openOrders.length) return;
+
+    let response;
+    if (openOrders.length === 1) {
+      response = await smm({ action: "status", order: openOrders[0].providerOrderId });
+    } else {
+      response = await smm({
+        action: "status",
+        orders: openOrders.map((order) => order.providerOrderId).join(","),
+      });
+    }
+
+    for (const order of openOrders) {
+      let statusData = openOrders.length === 1 ? response : response?.[order.providerOrderId];
+      if (!statusData || statusData.error || !statusData.status || statusData.status === order.status) continue;
+
+      const final = FINAL_STATUSES.has(statusData.status);
+      await Orders.updateOne(
+        { _id: order._id },
+        { $set: { status: statusData.status, final, startsCount: statusData.start_count, remainsCount: statusData.remains } },
+      );
+
+      let refund = 0;
+      if (statusData.status === "Canceled" || statusData.status === "Refunded") refund = order.charge;
+      if (statusData.status === "Partial") {
+        const remains = Number(statusData.remains);
+        if (Number.isFinite(remains) && remains >= 0) {
+          refund = Math.floor((order.charge * remains) / order.quantity);
+        }
+      }
+      if (refund > 0) {
+        const refundResult = await Orders.updateOne(
+          { _id: order._id, refunded: { $ne: true } },
+          { $set: { refunded: true, refund } },
+        );
+        if (refundResult.modifiedCount) {
+          await Users.updateOne({ _id: order.userId }, { $inc: { balance: refund } });
+        }
+      }
+
+      if (final) {
+        await bot.sendMessage(
+          order.userId,
+          `${STATUS_UZ[statusData.status] || statusData.status}\nBuyurtma №${order.providerOrderId} · ${short(order.serviceName, 50)}${refund > 0 ? `\n💰 Balansingizga ${som(refund)} qaytarildi.` : ""}`,
+        ).catch(() => {});
+      }
+    }
+  }
+
+  const orderPoll = setInterval(() => {
+    pollOrders().catch((error) => console.error(`SMM bot ${botId} holatini tekshirib bo'lmadi:`, error.message));
+  }, 60 * 1000);
+  orderPoll.unref?.();
 
   return {
     cancelPending: async () => {
