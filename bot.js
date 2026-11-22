@@ -28,6 +28,7 @@ const {
   MONGODB_URI,
   TOKEN_SECRET,
   CRON_SECRET,
+  PUBLIC_API_URL = "",
   PORT = 3000,
 } = process.env;
 const ADMIN_IDS = (process.env.ADMIN_IDS || "")
@@ -123,7 +124,11 @@ async function buildChild(doc) {
     SmmTopups: ConstructorDb.collection(`smm_topups_${doc._id}`),
     encryptSecret: encrypt,
     decryptSecret: decrypt,
+    publicApiBaseUrl: PUBLIC_API_URL,
   });
+  if (typeof templateControls?.handleApiRequest === "function") {
+    child.handleSmmApiRequest = templateControls.handleApiRequest;
+  }
   registerSubscriptionGate(child, { doc, Subs });
   registerAdminPanel(child, {
     doc,
@@ -259,9 +264,82 @@ async function broadcast(bot, coll, filter, field, text) {
   return { ok, fail };
 }
 
+async function readSmmApiBody(request) {
+  const contentType = String(request.headers["content-type"] || "")
+    .split(";", 1)[0].trim().toLowerCase();
+  if (!["application/json", "application/x-www-form-urlencoded"].includes(contentType)) {
+    const error = new Error("Content-Type JSON yoki form-urlencoded bo'lishi kerak.");
+    error.statusCode = 415;
+    throw error;
+  }
+
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 16 * 1024) {
+      const error = new Error("So'rov hajmi juda katta.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8");
+  try {
+    const value = contentType === "application/json"
+      ? JSON.parse(raw)
+      : Object.fromEntries(new URLSearchParams(raw));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Object expected.");
+    }
+    return value;
+  } catch {
+    const error = new Error("So'rov tanasi noto'g'ri formatda.");
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
 async function startHealthServer(mother) {
   const server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    const smmApiMatch = pathname.match(/^\/api\/smm\/(\d+)\/v2$/);
+    if (smmApiMatch) {
+      if (request.method !== "POST") {
+        response.writeHead(405, { Allow: "POST" });
+        response.end();
+        return;
+      }
+      const child = children.get(Number(smmApiMatch[1]));
+      if (typeof child?.handleSmmApiRequest !== "function") {
+        response.writeHead(404, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "SMM API topilmadi yoki bot ishlamayapti." }));
+        return;
+      }
+      try {
+        const params = await readSmmApiBody(request);
+        const result = await child.handleSmmApiRequest(params);
+        response.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        response.end(JSON.stringify(result));
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        if (statusCode >= 500) {
+          console.error("SMM tashqi API xatosi:", error.message);
+        }
+        response.writeHead(statusCode, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        response.end(JSON.stringify({
+          error: error.statusCode ? error.message : "Ichki server xatosi.",
+        }));
+      }
+      return;
+    }
     if (request.method !== "GET") {
       response.writeHead(405, { Allow: "GET" });
       response.end();

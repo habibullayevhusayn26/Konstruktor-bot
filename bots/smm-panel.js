@@ -1,9 +1,6 @@
 "use strict";
 
-const dns = require("node:dns").promises;
-const http = require("node:http");
-const https = require("node:https");
-const { isIP } = require("node:net");
+const crypto = require("node:crypto");
 const { ObjectId } = require("mongodb");
 
 const som = (n) => `${Math.round(Number(n) || 0).toLocaleString("uz-UZ")} so'm`;
@@ -11,101 +8,6 @@ const short = (value, length) => {
   const text = String(value || "");
   return text.length > length ? `${text.slice(0, length - 1)}…` : text;
 };
-
-function isPublicAddress(address) {
-  const family = isIP(address);
-  if (family === 4) {
-    const parts = address.split(".").map(Number);
-    const value = parts.reduce((result, part) => result * 256 + part, 0);
-    const ranges = [
-      ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10],
-      ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
-      ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.88.99.0", 24],
-      ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24],
-      ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
-    ];
-    return !ranges.some(([network, bits]) => {
-      const base = network.split(".").map(Number)
-        .reduce((result, part) => result * 256 + part, 0);
-      const divisor = 2 ** (32 - bits);
-      return Math.floor(value / divisor) === Math.floor(base / divisor);
-    });
-  }
-  if (family !== 6) return false;
-
-  const normalized = address.toLowerCase();
-  if (normalized.includes("%") || normalized.startsWith("::ffff:")) return false;
-  const halves = normalized.split("::");
-  if (halves.length > 2) return false;
-  const left = halves[0] ? halves[0].split(":") : [];
-  const right = halves[1] ? halves[1].split(":") : [];
-  const groups = halves.length === 2
-    ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right]
-    : left;
-  if (groups.length !== 8 || groups.some((group) => !/^[\da-f]{1,4}$/.test(group))) {
-    return false;
-  }
-  const value = groups.reduce(
-    (result, group) => (result << 16n) | BigInt(`0x${group}`),
-    0n,
-  );
-  const globalUnicast = (value >> 125n) === 1n;
-  const documentation = (value >> 96n) === 0x20010db8n;
-  const sixToFour = (value >> 112n) === 0x2002n;
-  return globalUnicast && !documentation && !sixToFour;
-}
-
-async function requestPublicProvider(url, { method, body, signal }) {
-  const target = new URL(url);
-  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
-    throw new Error("Provayder havolasi noto'g'ri.");
-  }
-
-  const hostname = target.hostname.replace(/^\[|\]$/g, "");
-  const addresses = isIP(hostname)
-    ? [{ address: hostname, family: isIP(hostname) }]
-    : await dns.lookup(hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
-    throw new Error("Provayder havolasi ommaviy internetdagi serverga tegishli bo'lishi kerak.");
-  }
-
-  const transport = target.protocol === "https:" ? https : http;
-  const encodedBody = Buffer.from(String(body));
-  return new Promise((resolve, reject) => {
-    const request = transport.request(target, {
-      method,
-      signal,
-      headers: {
-        "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
-        "content-length": encodedBody.length,
-      },
-      lookup: (_host, options, callback) => {
-        if (options?.all) callback(null, addresses);
-        else callback(null, addresses[0].address, addresses[0].family);
-      },
-    }, (response) => {
-      const chunks = [];
-      let size = 0;
-      response.on("data", (chunk) => {
-        size += chunk.length;
-        if (size > 5 * 1024 * 1024) {
-          response.destroy(new Error("Provayder javobi juda katta."));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on("error", reject);
-      response.on("end", () => {
-        resolve({
-          ok: response.statusCode >= 200 && response.statusCode < 300,
-          json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8")),
-        });
-      });
-    });
-    request.on("error", reject);
-    request.end(encodedBody);
-  });
-}
 
 function registerSmmPanel(bot, options = {}) {
   const botId = Number(bot.config._id);
@@ -115,7 +17,8 @@ function registerSmmPanel(bot, options = {}) {
   const Bots = options.Bots;
   const encryptSecret = options.encryptSecret;
   const decryptSecret = options.decryptSecret;
-  const fetchApi = options.fetch || requestPublicProvider;
+  const fetchApi = options.fetch || fetch;
+  const publicApiBaseUrl = String(options.publicApiBaseUrl || "").replace(/\/+$/, "");
   if (!Users || !Orders || !Topups) {
     throw new Error("SMM bot uchun MongoDB kolleksiyalari sozlanmagan.");
   }
@@ -131,38 +34,16 @@ function registerSmmPanel(bot, options = {}) {
   const admins = new Set((env.ADMIN_IDS || "").split(",").map((id) => Number(id)).filter(Boolean));
   if (bot.config.ownerId) admins.add(Number(bot.config.ownerId));
 
-  const serviceCatalogs = new Map();
+  let services = new Map();
+  let categories = [];
 
   Users.createIndex({ botId: 1, _id: 1 }).catch(() => {});
+  Users.createIndex({ smmApiKeyHash: 1 }, { sparse: true }).catch(() => {});
   Orders.createIndex({ botId: 1, final: 1 }).catch(() => {});
   Orders.createIndex({ botId: 1, userId: 1, createdAt: -1 }).catch(() => {});
   Topups.createIndex({ botId: 1, status: 1 }).catch(() => {});
 
-  async function getProvider(userId) {
-    const user = await Users.findOne({ _id: userId, botId });
-    if (user?.smmApiUrl || user?.smmApiKeyEncrypted) {
-      if (!user.smmApiUrl || !user.smmApiKeyEncrypted) {
-        throw new Error("Shaxsiy API havolasi va kalitini ikkalasini ham sozlang.");
-      }
-      if (typeof decryptSecret !== "function") {
-        throw new Error("Shaxsiy API kalitini ochish sozlanmagan.");
-      }
-      return {
-        apiUrl: user.smmApiUrl,
-        apiKey: decryptSecret(user.smmApiKeyEncrypted),
-        encryptedApiKey: user.smmApiKeyEncrypted,
-      };
-    }
-    if (!apiUrl || !apiKey) {
-      throw new Error("Buyurtma berishdan oldin shaxsiy API havolasi va kalitini sozlang.");
-    }
-    if (typeof encryptSecret !== "function") {
-      throw new Error("API kalitlarini xavfsiz saqlash sozlanmagan.");
-    }
-    return { apiUrl, apiKey, encryptedApiKey: encryptSecret(apiKey) };
-  }
-
-  async function smm(provider, params) {
+  async function requestProvider(provider, params) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     let response;
@@ -188,10 +69,14 @@ function registerSmmPanel(bot, options = {}) {
     return data;
   }
 
-  async function loadServices(userId, force = false) {
-    if (!force && serviceCatalogs.has(userId)) return serviceCatalogs.get(userId);
-    const provider = await getProvider(userId);
-    const list = await smm(provider, { action: "services" });
+  async function smm(params) {
+    if (!apiUrl || !apiKey) throw new Error("Provayder API hali sozlanmagan.");
+    return requestProvider({ apiUrl, apiKey }, params);
+  }
+
+  async function loadServices(force = false) {
+    if (!force && services.size) return;
+    const list = await smm({ action: "services" });
     const map = new Map();
     const cats = new Map();
     for (const item of list) {
@@ -202,18 +87,16 @@ function registerSmmPanel(bot, options = {}) {
         rate: Number(item.rate),
         min: Number(item.min),
         max: Number(item.max),
+        type: String(item.type || "Default"),
+        refill: item.refill === true || item.refill === 1 || item.refill === "1",
+        cancel: item.cancel === true || item.cancel === 1 || item.cancel === "1",
       };
       map.set(service.id, service);
       if (!cats.has(service.category)) cats.set(service.category, []);
       cats.get(service.category).push(service.id);
     }
-    const catalog = {
-      provider,
-      services: map,
-      categories: [...cats].map(([name, ids]) => ({ name, ids })),
-    };
-    serviceCatalogs.set(userId, catalog);
-    return catalog;
+    services = map;
+    categories = [...cats].map(([name, ids]) => ({ name, ids }));
   }
 
   const per1000 = (service) => service.rate * (1 + markup / 100) * usdRate;
@@ -226,7 +109,7 @@ function registerSmmPanel(bot, options = {}) {
       keyboard: [
         [{ text: "🛒 Buyurtma berish" }, { text: "📦 Buyurtmalarim" }],
         [{ text: "💰 Balans" }, { text: "💳 Hisobni to‘ldirish" }],
-        [{ text: "🔌 Shaxsiy API sozlamalari" }],
+        [{ text: "🌐 API ma’lumotlari" }],
         [
           { text: "☎️ Aloqa" },
           ...(admins.has(userId) ? [{ text: "🛠 SMM admin" }] : []),
@@ -277,16 +160,20 @@ function registerSmmPanel(bot, options = {}) {
 
   async function showUserApiSettings(ctx) {
     const user = await Users.findOne({ _id: ctx.from.id, botId });
-    const configured = Boolean(user?.smmApiUrl && user?.smmApiKeyEncrypted);
+    const apiUrl = publicApiBaseUrl
+      ? `${publicApiBaseUrl}/api/smm/${botId}/v2`
+      : "Serverda PUBLIC_API_URL sozlanmagan.";
     await ctx.reply(
-      `🔌 Shaxsiy API: ${configured ? "✅ sozlangan" : "❌ sozlanmagan"}\n` +
-        "Bu sozlamalar faqat sizning buyurtmalaringizga ishlaydi.",
+      `🌐 SMM API manzili:\n${apiUrl}\n\n` +
+        `API key: ${user?.smmApiKeyHash ? "yaratilgan (xavfsizlik uchun qayta ko‘rsatilmaydi)" : "hali yaratilmagan"}\n` +
+        "Har bir buyurtma sizning bot balansingizdan yechiladi.",
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "🌐 API havolasini kiritish", callback_data: "smmuserapi:url" }],
-            [{ text: "🔑 API kalitini kiritish", callback_data: "smmuserapi:key" }],
-            ...(configured ? [[{ text: "🗑 Shaxsiy API’ni o‘chirish", callback_data: "smmuserapi:clear" }]] : []),
+            [{
+              text: user?.smmApiKeyHash ? "🔄 API keyni yangilash" : "🔑 API key yaratish",
+              callback_data: "smmuserapi:generate",
+            }],
           ],
         },
       },
@@ -295,26 +182,27 @@ function registerSmmPanel(bot, options = {}) {
 
   bot.command("admin", showAdmin);
   bot.onText(/^🛠 SMM admin$/i, showAdmin);
-  bot.onText(/^🔌 Shaxsiy API sozlamalari$/i, showUserApiSettings);
+  bot.onText(/^🌐 API ma’lumotlari$/i, showUserApiSettings);
 
-  bot.onCallbackData(/^smmuserapi:(url|key|clear)$/, async (ctx, match) => {
+  bot.onCallbackData(/^smmuserapi:generate$/, async (ctx) => {
     await ctx.answer();
-    const action = match[1];
-    if (action === "clear") {
-      await Users.updateOne(
-        { _id: ctx.from.id, botId },
-        { $unset: { smmApiUrl: "", smmApiKeyEncrypted: "" } },
-      );
-      serviceCatalogs.delete(ctx.from.id);
-      states.delete(ctx.from.id);
-      await ctx.reply("✅ Shaxsiy API sozlamalari o‘chirildi.", replyKeyboard(ctx.from.id));
-      return;
-    }
-    states.set(ctx.from.id, { step: `user_api_${action}` });
+    const apiKey = `smm_${crypto.randomBytes(32).toString("hex")}`;
+    const apiKeyHash = crypto.createHash("sha256").update(apiKey).digest("hex");
+    await Users.updateOne(
+      { _id: ctx.from.id, botId },
+      {
+        $set: { botId, smmApiKeyHash: apiKeyHash },
+        $setOnInsert: { balance: 0, name: ctx.from.first_name, username: ctx.from.username || null },
+        $unset: { smmApiUrl: "", smmApiKeyEncrypted: "" },
+      },
+      { upsert: true },
+    );
+    const apiUrl = publicApiBaseUrl
+      ? `${publicApiBaseUrl}/api/smm/${botId}/v2`
+      : "Serverda PUBLIC_API_URL sozlanmagan.";
     await ctx.reply(
-      action === "url"
-        ? "Shaxsiy SMM API havolangizni (masalan, https://provider.uz/api/v2) yuboring:"
-        : "Shaxsiy SMM API kalitingizni yuboring:",
+      `✅ Shaxsiy API key yaratildi.\n\nAPI URL: ${apiUrl}\nAPI key: ${apiKey}\n\n` +
+        "Key faqat shu xabarda ko‘rsatiladi. Yo‘qolsa, yangisini yarating; eski key darhol bekor bo‘ladi.",
     );
   });
 
@@ -333,8 +221,8 @@ function registerSmmPanel(bot, options = {}) {
     }
     if (action === "reload") {
       try {
-        const catalog = await loadServices(ctx.from.id, true);
-        await ctx.reply(`✅ Xizmatlar yangilandi: ${catalog.services.size} ta.`);
+        await loadServices(true);
+        await ctx.reply(`✅ Xizmatlar yangilandi: ${services.size} ta.`);
       } catch (error) {
         await ctx.reply(`❌ Yangilab bo‘lmadi: ${error.message}`);
       }
@@ -381,11 +269,11 @@ function registerSmmPanel(bot, options = {}) {
         { $set: { botId, name: ctx.from.first_name, username: ctx.from.username || null }, $setOnInsert: { balance: 0 } },
         { upsert: true },
       );
-      const catalog = await loadServices(ctx.from.id, true);
-      if (!catalog.categories.length) return ctx.reply("Hozircha xizmatlar mavjud emas.");
+      await loadServices(true);
+      if (!categories.length) return ctx.reply("Hozircha xizmatlar mavjud emas.");
       await ctx.reply("Kategoriyani tanlang:", {
         reply_markup: {
-          inline_keyboard: catalog.categories.map((category, index) =>
+          inline_keyboard: categories.map((category, index) =>
             [{ text: short(category.name, 50), callback_data: `cat:${index}:0` }],
           ),
         },
@@ -397,14 +285,12 @@ function registerSmmPanel(bot, options = {}) {
 
   bot.onCallbackData(/^cat:(\d+):(\d+)$/, async (ctx, match) => {
     await ctx.answer();
-    const catalog = serviceCatalogs.get(ctx.from.id);
-    if (!catalog) return ctx.reply("Xizmatlar ro'yxatini qayta yuklang.");
-    const category = catalog.categories[Number(match[1])];
+    const category = categories[Number(match[1])];
     if (!category) return ctx.reply("Ro'yxat yangilangan, qaytadan tanlang.");
     const page = Number(match[2]);
     const ids = category.ids.slice(page * 8, (page + 1) * 8);
     const rows = ids.map((id) => {
-      const service = catalog.services.get(id);
+      const service = services.get(id);
       return [{ text: `${short(service.name, 38)} · ${som(per1000(service))}/1000`, callback_data: `svc:${id}` }];
     });
     if (page > 0) rows.push([{ text: "⬅️ Oldingi", callback_data: `cat:${match[1]}:${page - 1}` }]);
@@ -415,11 +301,9 @@ function registerSmmPanel(bot, options = {}) {
 
   bot.onCallbackData(/^cats$/, async (ctx) => {
     await ctx.answer();
-    const catalog = serviceCatalogs.get(ctx.from.id);
-    if (!catalog) return ctx.reply("Xizmatlar ro'yxatini qayta yuklang.");
     await ctx.edit("Kategoriyani tanlang:", {
       reply_markup: {
-        inline_keyboard: catalog.categories.map((category, index) =>
+        inline_keyboard: categories.map((category, index) =>
           [{ text: short(category.name, 50), callback_data: `cat:${index}:0` }],
         ),
       },
@@ -428,7 +312,7 @@ function registerSmmPanel(bot, options = {}) {
 
   bot.onCallbackData(/^svc:(\d+)$/, async (ctx, match) => {
     await ctx.answer();
-    const service = serviceCatalogs.get(ctx.from.id)?.services.get(Number(match[1]));
+    const service = services.get(Number(match[1]));
     if (!service) return ctx.reply("Xizmat topilmadi.");
     states.set(ctx.from.id, { step: "link", serviceId: service.id });
     await ctx.edit(
@@ -442,54 +326,6 @@ function registerSmmPanel(bot, options = {}) {
     const state = states.get(ctx.from.id);
     if (!state) return;
 
-    if (state.step === "user_api_url" || state.step === "user_api_key") {
-      try {
-        let update;
-        if (state.step === "user_api_url") {
-          let parsedUrl;
-          try {
-            parsedUrl = new URL(text);
-          } catch {
-            throw new Error("API havolasi noto'g'ri.");
-          }
-          if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-            throw new Error("API havolasi http:// yoki https:// bilan boshlansin.");
-          }
-          update = { smmApiUrl: text };
-        } else {
-          if (text.length < 8) throw new Error("API kaliti juda qisqa.");
-          if (typeof encryptSecret !== "function") {
-            throw new Error("API kalitlarini xavfsiz saqlash sozlanmagan.");
-          }
-          update = { smmApiKeyEncrypted: encryptSecret(text) };
-        }
-        await Users.updateOne(
-          { _id: ctx.from.id, botId },
-          {
-            $set: { botId, ...update },
-            $setOnInsert: { balance: 0, name: ctx.from.first_name, username: ctx.from.username || null },
-          },
-          { upsert: true },
-        );
-        states.delete(ctx.from.id);
-        serviceCatalogs.delete(ctx.from.id);
-        if (state.step === "user_api_key") {
-          try {
-            await ctx.api("deleteMessage", {
-              chat_id: ctx.chat.id,
-              message_id: ctx.message.message_id,
-            });
-          } catch (error) {
-            console.error("SMM API kaliti yozilgan xabarni o'chirib bo'lmadi:", error.message);
-          }
-        }
-        await ctx.reply("✅ Shaxsiy API sozlamasi saqlandi.", replyKeyboard(ctx.from.id));
-      } catch (error) {
-        await ctx.reply(`❌ ${error.message}`);
-      }
-      return;
-    }
-
     if (state.step?.startsWith("admin_") && admins.has(ctx.from.id)) {
       const action = state.step.slice(6);
       states.delete(ctx.from.id);
@@ -498,12 +334,14 @@ function registerSmmPanel(bot, options = {}) {
           if (!/^https?:\/\//i.test(text)) throw new Error("API havolasi http:// yoki https:// bilan boshlansin.");
           apiUrl = text;
           await saveConfig({ smmApiUrl: apiUrl });
-          serviceCatalogs.clear();
+          services.clear();
+          categories = [];
         } else if (action === "key") {
           if (text.length < 8) throw new Error("API kaliti juda qisqa.");
           apiKey = text;
           await saveConfig({ smmApiKey: apiKey });
-          serviceCatalogs.clear();
+          services.clear();
+          categories = [];
         } else if (action === "rate") {
           const value = Number(text.replace(/[^\d.]/g, ""));
           if (!Number.isFinite(value) || value <= 0) throw new Error("USD kursi musbat son bo'lsin.");
@@ -547,7 +385,7 @@ function registerSmmPanel(bot, options = {}) {
     if (state.step === "link") {
       if (text.length < 4) return ctx.reply("Havola noto'g'ri.");
       states.set(ctx.from.id, { ...state, step: "quantity", link: text });
-      const service = serviceCatalogs.get(ctx.from.id)?.services.get(state.serviceId);
+      const service = services.get(state.serviceId);
       if (!service) return ctx.reply("Xizmatlar ro'yxati eskirgan. Qaytadan buyurtma boshlang.");
       await ctx.reply(`Miqdorni yuboring (${service.min}–${service.max}):`);
       return;
@@ -555,7 +393,7 @@ function registerSmmPanel(bot, options = {}) {
 
     if (state.step === "quantity") {
       const quantity = Number(text);
-      const service = serviceCatalogs.get(ctx.from.id)?.services.get(state.serviceId);
+      const service = services.get(state.serviceId);
       if (!service) return ctx.reply("Xizmatlar ro'yxati eskirgan. Qaytadan buyurtma boshlang.");
       if (!Number.isInteger(quantity) || quantity < service.min || quantity > service.max) {
         await ctx.reply(`Miqdor ${service.min}–${service.max} oralig‘ida butun son bo‘lsin.`);
@@ -661,12 +499,11 @@ function registerSmmPanel(bot, options = {}) {
     if (!paid) return ctx.reply("❌ Balans yetarli emas. Hisobni to‘ldiring.");
 
     try {
-      const catalog = serviceCatalogs.get(ctx.from.id);
-      const service = catalog?.services.get(state.serviceId);
-      if (!catalog || !service) {
+      const service = services.get(state.serviceId);
+      if (!service) {
         throw new Error("Xizmatlar ro'yxati eskirgan. Qaytadan buyurtma boshlang.");
       }
-      const result = await smm(catalog.provider, {
+      const result = await smm({
         action: "add",
         service: state.serviceId,
         link: state.link,
@@ -681,8 +518,8 @@ function registerSmmPanel(bot, options = {}) {
         quantity: state.quantity,
         charge: state.price,
         providerOrderId: String(result.order),
-        providerApiUrl: catalog.provider.apiUrl,
-        providerApiKeyEncrypted: catalog.provider.encryptedApiKey,
+        providerApiUrl: apiUrl,
+        providerApiKeyEncrypted: encryptSecret?.(apiKey),
         status: "Pending",
         final: false,
         createdAt: new Date(),
@@ -736,8 +573,8 @@ function registerSmmPanel(bot, options = {}) {
     for (const { provider, orders: providerOrders } of groups.values()) {
       try {
         const response = providerOrders.length === 1
-          ? await smm(provider, { action: "status", order: providerOrders[0].providerOrderId })
-          : await smm(provider, {
+          ? await requestProvider(provider, { action: "status", order: providerOrders[0].providerOrderId })
+          : await requestProvider(provider, {
               action: "status",
               orders: providerOrders.map((order) => order.providerOrderId).join(","),
             });
@@ -783,12 +620,133 @@ function registerSmmPanel(bot, options = {}) {
     }
   }
 
+  async function handleApiRequest(params) {
+    const rawKey = typeof params?.key === "string" ? params.key : "";
+    if (!rawKey) return { error: "API key is required." };
+    const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
+    const user = await Users.findOne({ botId, smmApiKeyHash: keyHash });
+    if (!user) return { error: "Invalid API key." };
+
+    const action = String(params.action || "");
+    try {
+      if (action === "services") {
+        await loadServices();
+        return [...services.values()].map((service) => ({
+          service: service.id,
+          name: service.name,
+          type: service.type,
+          category: service.category,
+          rate: Number(per1000(service).toFixed(2)),
+          min: service.min,
+          max: service.max,
+          refill: service.refill,
+          cancel: service.cancel,
+        }));
+      }
+
+      if (action === "balance") {
+        return { balance: Number(user.balance) || 0, currency: "UZS" };
+      }
+
+      if (action === "add") {
+        await loadServices();
+        const serviceId = Number(params.service);
+        const service = services.get(serviceId);
+        const quantity = Number(params.quantity);
+        const link = String(params.link || "");
+        if (!service) return { error: "Service not found." };
+        if (!Number.isSafeInteger(quantity) || quantity < service.min || quantity > service.max) {
+          return { error: `Quantity must be between ${service.min} and ${service.max}.` };
+        }
+        if (link.length < 4) return { error: "Link is invalid." };
+
+        const charge = priceOf(service, quantity);
+        const paid = await Users.findOneAndUpdate(
+          { _id: user._id, botId, balance: { $gte: charge } },
+          { $inc: { balance: -charge } },
+          { returnDocument: "after" },
+        );
+        if (!paid) return { error: "Not enough balance." };
+
+        try {
+          const result = await smm({
+            action: "add",
+            service: service.id,
+            link,
+            quantity,
+          });
+          await Orders.insertOne({
+            botId,
+            userId: user._id,
+            serviceId: service.id,
+            serviceName: service.name,
+            link,
+            quantity,
+            charge,
+            providerOrderId: String(result.order),
+            providerApiUrl: apiUrl,
+            providerApiKeyEncrypted: encryptSecret?.(apiKey),
+            status: "Pending",
+            final: false,
+            createdAt: new Date(),
+          });
+          return { order: result.order };
+        } catch (error) {
+          await Users.updateOne(
+            { _id: user._id, botId },
+            { $inc: { balance: charge } },
+          );
+          return { error: error.message };
+        }
+      }
+
+      if (action === "status") {
+        const requestedIds = params.order
+          ? [String(params.order)]
+          : String(params.orders || "").split(",").map((id) => id.trim()).filter(Boolean);
+        if (!requestedIds.length || requestedIds.length > 100) {
+          return { error: "Provide between 1 and 100 order IDs." };
+        }
+        const foundOrders = await Orders.find({
+          botId,
+          userId: user._id,
+          providerOrderId: { $in: requestedIds },
+        }).toArray();
+        if (foundOrders.length !== requestedIds.length) return { error: "Order not found." };
+
+        const providerStatus = foundOrders.length === 1
+          ? await smm({ action: "status", order: foundOrders[0].providerOrderId })
+          : await smm({
+              action: "status",
+              orders: foundOrders.map((order) => order.providerOrderId).join(","),
+            });
+        return Object.fromEntries(foundOrders.map((order) => {
+          const status = foundOrders.length === 1
+            ? providerStatus
+            : providerStatus?.[order.providerOrderId];
+          return [order.providerOrderId, {
+            charge: order.charge,
+            start_count: status?.start_count ?? order.startsCount ?? 0,
+            status: status?.status || order.status,
+            remains: status?.remains ?? order.remainsCount ?? order.quantity,
+            currency: "UZS",
+          }];
+        }));
+      }
+
+      return { error: "Invalid action." };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
   const orderPoll = setInterval(() => {
     pollOrders().catch((error) => console.error(`SMM bot ${botId} holatini tekshirib bo'lmadi:`, error.message));
   }, 60 * 1000);
   orderPoll.unref?.();
 
   return {
+    handleApiRequest,
     cancelPending: async () => {
       states.clear();
     },

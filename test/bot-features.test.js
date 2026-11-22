@@ -106,22 +106,27 @@ test("SMM top-up receipt sends its Telegram file ID to admins", async () => {
   assert.match(replies.at(-1).text, /adminga yuborildi/);
 });
 
-test("SMM users use their own API credentials for services and orders", async () => {
+test("SMM API keys map users to their separate bot balances", async () => {
   const userDocs = new Map();
-  userDocs.set(88, { balance: 100000 });
-  userDocs.set(99, { balance: 100000 });
+  userDocs.set(88, { _id: 88, botId: 123456, balance: 100000 });
+  userDocs.set(99, { _id: 99, botId: 123456, balance: 100000 });
   const orderDocs = [];
   const users = {
     createIndex: async () => "index",
-    findOne: async (filter) => userDocs.get(filter._id) || null,
+    findOne: async (filter) => filter.smmApiKeyHash
+      ? [...userDocs.values()].find((user) =>
+          user.botId === filter.botId && user.smmApiKeyHash === filter.smmApiKeyHash) || null
+      : userDocs.get(filter._id) || null,
     updateOne: async (filter, update) => {
       const exists = userDocs.has(filter._id);
       const current = userDocs.get(filter._id) || {};
-      userDocs.set(filter._id, {
+      const next = {
         ...current,
         ...(exists ? {} : update.$setOnInsert),
         ...update.$set,
-      });
+      };
+      for (const field of Object.keys(update.$unset || {})) delete next[field];
+      userDocs.set(filter._id, next);
       return { matchedCount: 1 };
     },
     findOneAndUpdate: async (filter, update) => {
@@ -138,31 +143,46 @@ test("SMM users use their own API credentials for services and orders", async ()
       orderDocs.push(order);
       return { insertedId: orderDocs.length };
     },
+    find: (filter) => ({
+      toArray: async () => orderDocs.filter((order) =>
+        order.botId === filter.botId &&
+        order.userId === filter.userId &&
+        filter.providerOrderId.$in.includes(order.providerOrderId)),
+    }),
   };
   const topups = { createIndex: async () => "index" };
   const requests = [];
   const bot = new BotConstructor("test-token");
-  bot.config = { _id: 123456, ownerId: 77 };
-  registerSmmPanel(bot, {
+  bot.config = {
+    _id: 123456,
+    ownerId: 77,
+    smmApiUrl: "https://prm4u.com/api/v2",
+    smmApiKey: "OWNER_PROVIDER_KEY",
+  };
+  const controls = registerSmmPanel(bot, {
     SmmUsers: users,
     SmmOrders: orders,
     SmmTopups: topups,
     encryptSecret: (value) => `encrypted:${value}`,
     decryptSecret: (value) => value.replace(/^encrypted:/, ""),
+    publicApiBaseUrl: "https://bots.example",
     fetch: async (url, options) => {
       const params = new URLSearchParams(options.body);
       const key = params.get("key");
-      requests.push({ url, key, action: params.get("action") });
-      const payload = params.get("action") === "services"
+      const action = params.get("action");
+      requests.push({ url, key, action });
+      const payload = action === "services"
         ? [{
-            service: key === "USER_KEY_A" ? 101 : 202,
-            name: key === "USER_KEY_A" ? "User A service" : "User B service",
+            service: 101,
+            name: "Provider service",
             category: "Category",
             rate: 0.0001,
             min: 100,
             max: 10000,
           }]
-        : { order: `provider-${key}` };
+        : action === "status"
+          ? { status: "Completed", start_count: 100, remains: 0 }
+          : { order: `provider-order-${requests.filter((request) => request.action === "add").length}` };
       return { ok: true, json: async () => payload };
     },
   });
@@ -172,7 +192,6 @@ test("SMM users use their own API credentials for services and orders", async ()
     return { message_id: replies.length };
   };
   bot.api = async () => ({ message_id: 1 });
-  bot.editMessageText = async () => ({ message_id: 1 });
 
   const sendCallback = async (userId, data) => {
     const chat = { id: userId, type: "private" };
@@ -185,47 +204,84 @@ test("SMM users use their own API credentials for services and orders", async ()
       },
     });
   };
-  const sendText = async (userId, text) => {
+  const sendApiInfoRequest = async (userId) => {
     const chat = { id: userId, type: "private" };
     await bot.processUpdate({
-      message: { chat, from: { id: userId }, text, message_id: 2 },
+      message: {
+        chat,
+        from: { id: userId },
+        text: "🌐 API ma’lumotlari",
+        message_id: 2,
+      },
     });
   };
+  const getApiKey = (userId) => {
+    const message = replies.filter((reply) => reply.chatId === userId).at(-1).text;
+    return message.match(/API key: (smm_[a-f\d]+)/)[1];
+  };
 
-  for (const [userId, suffix, key] of [
-    [88, "a", "USER_KEY_A"],
-    [99, "b", "USER_KEY_B"],
-  ]) {
-    await sendCallback(userId, "smmuserapi:url");
-    await sendText(userId, `https://provider-${suffix}.example/api/v2`);
-    await sendCallback(userId, "smmuserapi:key");
-    await sendText(userId, key);
-    await sendText(userId, "🛒 Buyurtma berish");
-    await sendCallback(userId, "cat:0:0");
-    await sendCallback(userId, `svc:${key === "USER_KEY_A" ? 101 : 202}`);
-    await sendText(userId, "https://example.com/post");
-    await sendText(userId, "100");
-    await sendCallback(userId, "order:confirm");
-  }
+  await sendApiInfoRequest(88);
+  assert.match(replies.at(-1).text, /https:\/\/bots\.example\/api\/smm\/123456\/v2/);
+  await sendCallback(88, "smmuserapi:generate");
+  await sendApiInfoRequest(99);
+  await sendCallback(99, "smmuserapi:generate");
+  const keyA = getApiKey(88);
+  const keyB = getApiKey(99);
 
-  assert.equal(userDocs.get(88).smmApiKeyEncrypted, "encrypted:USER_KEY_A");
-  assert.equal(userDocs.get(99).smmApiKeyEncrypted, "encrypted:USER_KEY_B");
-  assert.deepEqual(orderDocs.map((order) => order.serviceId), [101, 202]);
-  assert.deepEqual(orderDocs.map((order) => order.providerApiUrl), [
-    "https://provider-a.example/api/v2",
-    "https://provider-b.example/api/v2",
-  ]);
-  assert.deepEqual(orderDocs.map((order) => order.providerApiKeyEncrypted), [
-    "encrypted:USER_KEY_A",
-    "encrypted:USER_KEY_B",
-  ]);
-  assert.deepEqual(requests.filter((request) => request.action === "add").map((request) => [
-    request.url,
-    request.key,
-  ]), [
-    ["https://provider-a.example/api/v2", "USER_KEY_A"],
-    ["https://provider-b.example/api/v2", "USER_KEY_B"],
-  ]);
+  assert.notEqual(keyA, keyB);
+  assert.notEqual(userDocs.get(88).smmApiKeyHash, keyA);
+  assert.notEqual(userDocs.get(99).smmApiKeyHash, keyB);
+  assert.deepEqual(await controls.handleApiRequest({ key: keyA, action: "balance" }), {
+    balance: 100000,
+    currency: "UZS",
+  });
+  assert.deepEqual(await controls.handleApiRequest({ key: keyB, action: "balance" }), {
+    balance: 100000,
+    currency: "UZS",
+  });
+
+  const catalog = await controls.handleApiRequest({ key: keyA, action: "services" });
+  assert.equal(catalog[0].service, 101);
+  const firstOrder = await controls.handleApiRequest({
+    key: keyA,
+    action: "add",
+    service: "101",
+    link: "https://example.com/a",
+    quantity: "1000",
+  });
+  const secondOrder = await controls.handleApiRequest({
+    key: keyB,
+    action: "add",
+    service: "101",
+    link: "https://example.com/b",
+    quantity: "1000",
+  });
+
+  assert.deepEqual(firstOrder, { order: "provider-order-1" });
+  assert.deepEqual(secondOrder, { order: "provider-order-2" });
+  assert.equal(userDocs.get(88).balance, 99998);
+  assert.equal(userDocs.get(99).balance, 99998);
+  assert.deepEqual(orderDocs.map((order) => order.userId), [88, 99]);
+  assert.ok(requests.filter((request) => request.action === "add")
+    .every((request) => request.url === "https://prm4u.com/api/v2" && request.key === "OWNER_PROVIDER_KEY"));
+  assert.deepEqual(await controls.handleApiRequest({
+    key: keyA,
+    action: "status",
+    order: "provider-order-1",
+  }), {
+    "provider-order-1": {
+      charge: 2,
+      start_count: 100,
+      status: "Completed",
+      remains: 0,
+      currency: "UZS",
+    },
+  });
+  assert.deepEqual(await controls.handleApiRequest({
+    key: keyB,
+    action: "status",
+    order: "provider-order-1",
+  }), { error: "Order not found." });
 });
 
 test("bot constructor dispatches messages, photos, callbacks and middleware", async () => {
