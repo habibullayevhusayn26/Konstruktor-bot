@@ -362,18 +362,33 @@ function registerSmmPanel(bot, options = {}) {
       receiptFileId: ctx.message.photo.at(-1).file_id,
       createdAt: new Date(),
     });
+    let notifiedAdmins = 0;
     for (const adminId of admins) {
-      await bot.sendPhoto(adminId, ctx.message.photo.at(-1).file_id, "chek.jpg", {
-        caption: `SMM to‘lov so‘rovi\nFoydalanuvchi: ${ctx.from.id}\nSumma: ${som(state.amount)}`,
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "✅ Tasdiqlash", callback_data: `topup:ok:${result.insertedId}` },
-            { text: "❌ Rad etish", callback_data: `topup:no:${result.insertedId}` },
-          ]],
-        },
-      }).catch(() => {});
+      try {
+        await bot.api("sendPhoto", {
+          chat_id: adminId,
+          photo: ctx.message.photo.at(-1).file_id,
+          caption: `SMM to‘lov so‘rovi\nFoydalanuvchi: ${ctx.from.id}\nSumma: ${som(state.amount)}`,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ Tasdiqlash", callback_data: `topup:ok:${result.insertedId}` },
+              { text: "❌ Rad etish", callback_data: `topup:no:${result.insertedId}` },
+            ]],
+          },
+        });
+        notifiedAdmins++;
+      } catch (error) {
+        console.error(`SMM to'lov cheki ${adminId} adminiga yuborilmadi:`, error.message);
+      }
     }
-    await ctx.reply("Chek adminga yuborildi. Tasdiqlangach balans to‘ldiriladi.", replyKeyboard(ctx.from.id));
+    await ctx.reply(
+      notifiedAdmins
+        ? "Chek tekshirish uchun adminga yuborildi. Tasdiqlangach balans to‘ldiriladi."
+        : admins.size
+          ? "Chek saqlandi, lekin adminga yuborilmadi. Bot egasiga murojaat qiling."
+          : "Chek saqlandi, lekin admin sozlanmagan. Bot egasiga murojaat qiling.",
+      replyKeyboard(ctx.from.id),
+    );
   });
 
   bot.onCallbackData(/^topup:(ok|no):(.+)$/, async (ctx, match) => {

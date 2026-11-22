@@ -68,6 +68,44 @@ test("SMM panel start sends a visible reply keyboard", async () => {
   assert.equal(replies[0].options.reply_markup.keyboard[0][0].text, "🛒 Buyurtma berish");
 });
 
+test("SMM top-up receipt sends its Telegram file ID to admins", async () => {
+  const collection = {
+    createIndex: async () => "index",
+    insertOne: async () => ({ insertedId: "topup-1" }),
+  };
+  const bot = new BotConstructor("test-token");
+  bot.config = { _id: 123456, ownerId: 77 };
+  registerSmmPanel(bot, {
+    SmmUsers: collection,
+    SmmOrders: collection,
+    SmmTopups: collection,
+    Bots: collection,
+  });
+
+  const replies = [];
+  const apiCalls = [];
+  bot.sendMessage = async (chatId, text, options) => {
+    replies.push({ chatId, text, options });
+  };
+  bot.api = async (method, payload) => {
+    apiCalls.push({ method, payload });
+    return { message_id: 1 };
+  };
+
+  const chat = { id: 88, type: "private" };
+  const from = { id: 88 };
+  await bot.processUpdate({ message: { chat, from, text: "💳 Hisobni to‘ldirish" } });
+  await bot.processUpdate({ message: { chat, from, text: "5000" } });
+  await bot.processUpdate({
+    message: { chat, from, photo: [{ file_id: "telegram-photo-id" }] },
+  });
+
+  assert.equal(apiCalls[0].method, "sendPhoto");
+  assert.equal(apiCalls[0].payload.chat_id, 77);
+  assert.equal(apiCalls[0].payload.photo, "telegram-photo-id");
+  assert.match(replies.at(-1).text, /adminga yuborildi/);
+});
+
 test("bot constructor dispatches messages, photos, callbacks and middleware", async () => {
   const bot = new BotConstructor("test-token");
   const seen = [];
