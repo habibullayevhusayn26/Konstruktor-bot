@@ -14,8 +14,9 @@ tekshirish va ishga tushirish paytida ham loading ko'rsatiladi.
 - Nakrutka / SMM bot: SMM panel API orqali xizmatlar ro'yxatini, so'mdagi
   narxlarni, balans va cheklar orqali to'lovni hamda buyurtma holatini boshqaradi.
 - Musiqa qidiruv bot: Jamendo'dan tijoriy foydalanishga ruxsat beruvchi Creative
-  Commons litsenziyali treklarni qidiradi va tanlangan MP3'ni Telegram audio URL'i
-  orqali yuboradi. Yuklangan Telegram `file_id` jarayon xotirasida keshlanadi.
+  Commons litsenziyali treklarni qidirib MP3 yuboradi, YouTube'dan esa video
+  qidirib rasmiy havolalarni ko'rsatadi. Yuklangan Telegram `file_id` jarayon
+  xotirasida keshlanadi.
 - Nickname shrift generator: 17 xil Unicode variantini alohida bosiladigan,
   clipboard'ga nusxa oluvchi tugmalar bilan ko'rsatadi.
 - Kanal postiga matn qo'shish: havola, format va emoji mavjud matnni tanlangan
@@ -129,8 +130,8 @@ foydalanuvchi kanal a'zoligini tekshiradi.
 3. Ixtiyoriy `ADMIN_IDS` qiymatiga konstruktor adminlarining Telegram ID'larini
    vergul bilan yozing.
 4. `npm install`, so'ng `npm start` bajaring (Node.js 20.9 yoki yangiroq).
-5. Musiqa bot uchun Jamendo developer hisobidan `JAMENDO_CLIENT_ID` oling va
-   `.env` fayliga kiriting.
+5. Musiqa bot uchun Jamendo developer hisobidan `JAMENDO_CLIENT_ID` va YouTube
+   Data API v3 uchun `YOUTUBE_API_KEY` oling va `.env` fayliga kiriting.
 
 ## Render va cron
 
@@ -138,8 +139,9 @@ Render Blueprint'ni `render.yaml` orqali yarating. `TELEGRAM_BOT_TOKEN`,
 `MONGODB_URI` va `TOKEN_SECRET` secret'larini Render sozlamalariga kiriting.
 `TOKEN_SECRET` lokal `.env` va Render'da bir xil bo'lishi kerak.
 Musiqa bot yaratish uchun Render environment variables ichiga `JAMENDO_CLIENT_ID`
-qo'shing. Audio fayl Render'ga yuklab olinmaydi; Telegram Jamendo URL'idan oladi,
-Telegram qaytargan `file_id` esa ilova xotirasida keshlanadi.
+va `YOUTUBE_API_KEY` qo'shing. Audio fayl Render'ga yuklab olinmaydi; Telegram
+Jamendo URL'idan oladi, Telegram qaytargan `file_id` esa ilova xotirasida keshlanadi.
+YouTube natijalari MP3 emas, rasmiy video havolalari sifatida ko'rsatiladi.
 
 Cron-job.org'da har 14 daqiqada HTTP GET so'rovini
 `https://<render-xizmati>.onrender.com/cron` manziliga yuboring va

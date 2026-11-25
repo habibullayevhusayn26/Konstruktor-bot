@@ -29,7 +29,7 @@ const BOT_TYPES = Object.freeze({
   },
   music: {
     label: "Musiqa qidiruv bot",
-    description: "Jamendo'dan ochiq litsenziyali musiqalarni qidiring va MP3 qilib oling.",
+    description: "Jamendo'dan ochiq litsenziyali MP3 oling yoki YouTube videolarini qidiring.",
     module: "music-search",
   },
   "file-editor": {

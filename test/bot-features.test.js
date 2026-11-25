@@ -1448,6 +1448,64 @@ test("music bot searches licensed Jamendo tracks and reuses Telegram file IDs", 
   assert.equal(audioRequests[1].caption, "👉 @test_music_bot");
 });
 
+test("music bot keeps YouTube video results when Jamendo search fails", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const requests = [];
+  const fetchImpl = async (input) => {
+    const url = new URL(input);
+    requests.push(url);
+    if (url.hostname === "api.jamendo.com") {
+      return { ok: false, status: 503 };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: { videoId: "abcdefghijk" },
+            snippet: { title: "Video Song", channelTitle: "Video Artist" },
+          },
+          {
+            id: { videoId: "bad" },
+            snippet: { title: "Invalid video", channelTitle: "Unknown" },
+          },
+        ],
+      }),
+    };
+  };
+  bot.sendMessage = async (_chatId, text, options) => replies.push({ text, options });
+  registerMusicSearchBot(bot, {
+    doc: { _id: 456002, username: "test_music_bot" },
+    clientId: "jamendo-client-id",
+    youtubeApiKey: "youtube-api-key",
+    fetchImpl,
+  });
+
+  await bot.processUpdate({
+    message: {
+      chat: { id: 73, type: "private" },
+      from: { id: 73 },
+      text: "Video Song",
+    },
+  });
+
+  assert.equal(requests.length, 2);
+  const youtubeRequest = requests.find((url) => url.hostname === "www.googleapis.com");
+  assert.ok(youtubeRequest);
+  assert.equal(youtubeRequest.pathname, "/youtube/v3/search");
+  assert.equal(youtubeRequest.searchParams.get("key"), "youtube-api-key");
+  assert.equal(youtubeRequest.searchParams.get("q"), "Video Song");
+  assert.equal(youtubeRequest.searchParams.get("type"), "video");
+  assert.equal(youtubeRequest.searchParams.get("maxResults"), "5");
+  assert.match(replies[0].text, /Video Song — Video Artist/);
+  assert.equal(replies[0].options.reply_markup.inline_keyboard.length, 1);
+  assert.equal(
+    replies[0].options.reply_markup.inline_keyboard[0][0].url,
+    "https://www.youtube.com/watch?v=abcdefghijk",
+  );
+});
+
 test("image text editor replaces only the sample title", async () => {
   const bot = new BotConstructor("test-token");
   const sent = [];
