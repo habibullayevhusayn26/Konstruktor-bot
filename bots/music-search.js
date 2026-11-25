@@ -6,7 +6,6 @@ const SEARCH_SESSION_TTL = 10 * 60 * 1000;
 const MAX_SEARCH_CACHE = 100;
 const MAX_SEARCH_SESSIONS = 500;
 const MAX_AUDIO_FILE_IDS = 500;
-const searchYouTubeVideos = require("./youtube-search");
 
 const searchCache = new Map();
 const searchSessions = new Map();
@@ -194,13 +193,12 @@ async function getAudioFileId(bot, botId, track, chatId, botUsername) {
 function registerMusicSearchBot(bot, {
   doc,
   clientId = process.env.JAMENDO_CLIENT_ID,
-  youtubeApiKey = process.env.YOUTUBE_API_KEY,
   fetchImpl = globalThis.fetch,
 }) {
   bot.command("start", async (ctx) => {
     await ctx.reply(
       "🎵 Musiqa nomi yoki ijrochi nomini yozing.\n" +
-        "Jamendo'dan ochiq litsenziyali MP3 yoki YouTube'dan rasmiy video havolalarini topaman.",
+        "Ochiq litsenziyali Jamendo natijalaridan birini tanlang — MP3 audio yuboraman.",
     );
   });
 
@@ -211,7 +209,7 @@ function registerMusicSearchBot(bot, {
     const session = readCache(searchSessions, sessionKey);
     const index = Number(ctx.text.split(":").at(-1));
     const track = session?.[index];
-    if (!track || track.source !== "jamendo") {
+    if (!track) {
       await ctx.reply("Qidiruv natijalari eskirgan. Musiqa nomini qayta yuboring.");
       return;
     }
@@ -244,35 +242,12 @@ function registerMusicSearchBot(bot, {
       return;
     }
     try {
-      const sources = [
-        {
-          id: "jamendo",
-          name: "Jamendo",
-          search: clientId
-            ? searchJamendo(query, clientId, fetchImpl)
-            : Promise.resolve([]),
-        },
-        {
-          id: "youtube",
-          name: "YouTube",
-          search: youtubeApiKey
-            ? searchYouTubeVideos(query, youtubeApiKey, fetchImpl)
-            : Promise.resolve([]),
-        },
-      ];
-      const outcomes = await Promise.allSettled(sources.map((source) => source.search));
-      const results = [];
-      outcomes.forEach((outcome, index) => {
-        if (outcome.status === "rejected") {
-          console.error(`${sources[index].name} qidiruvi bajarilmadi:`, outcome.reason.message);
-          return;
-        }
-        results.push(...outcome.value.map((result) => ({
-          ...result,
-          source: sources[index].id,
-        })));
-      });
-      if (!results.length) {
+      if (!clientId) {
+        await ctx.reply("Topilmadi, qayta urinib ko'ring.");
+        return;
+      }
+      const tracks = await searchJamendo(query, clientId, fetchImpl);
+      if (!tracks.length) {
         await ctx.reply("Topilmadi, qayta urinib ko'ring.");
         return;
       }
@@ -281,33 +256,24 @@ function registerMusicSearchBot(bot, {
       writeCache(
         searchSessions,
         sessionKey,
-        results,
+        tracks,
         SEARCH_SESSION_TTL,
         MAX_SEARCH_SESSIONS,
       );
-      const description = results.map((result, index) =>
-        result.source === "youtube"
-          ? `${index + 1}. ▶️ ${result.title} — ${result.channel}`
-          : `${index + 1}. 🎵 ${result.name} — ${result.artist}\n` +
-            `⏱ ${formatDuration(result.duration)} · ${licenseLabel(result.license)}`
+      const description = tracks.map((track, index) =>
+        `${index + 1}. ${track.name} — ${track.artist}\n` +
+        `⏱ ${formatDuration(track.duration)} · ${licenseLabel(track.license)}`
       ).join("\n\n");
-      await ctx.reply(`🎵 Natijalar:\n\n${description}\n\nJamendo trekni tanlang yoki YouTube videosini oching:`, {
+      await ctx.reply(`🎵 Jamendo natijalari:\n\n${description}\n\nMP3 yuborish uchun tanlang:`, {
         reply_markup: {
-          inline_keyboard: results.map((result, index) => [
-            result.source === "youtube"
-              ? {
-                  text: `▶️ ${clipText(`${result.title} — ${result.channel}`, 60)}`,
-                  url: result.url,
-                }
-              : {
-                  text: `🎵 ${clipText(`${result.name} — ${result.artist}`, 60)}`,
-                  callback_data: `music:play:${index}`,
-                },
-          ]),
+          inline_keyboard: tracks.map((track, index) => [{
+            text: `▶ ${clipText(`${track.name} — ${track.artist}`, 60)}`,
+            callback_data: `music:play:${index}`,
+          }]),
         },
       });
     } catch (error) {
-      console.error("Musiqa qidiruvi bajarilmadi:", error.message);
+      console.error("Jamendo musiqa qidiruvi bajarilmadi:", error.message);
       await ctx.reply("Topilmadi, qayta urinib ko'ring.");
     }
   });

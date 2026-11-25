@@ -2048,7 +2048,7 @@ async function main() {
                 : doc.type === "watermark"
                   ? "✅ Watermark bot yaratildi. 3 kunlik bepul sinov boshlandi. Bot ichida /start yuborib logo va rasm sozlamalarini tanlang."
                   : doc.type === "music"
-                    ? "✅ Musiqa qidiruv boti yaratildi. Jamendo uchun JAMENDO_CLIENT_ID, YouTube video qidiruvi uchun YOUTUBE_API_KEY ni Render'da sozlang. Foydalanish: /start."
+                    ? "✅ Musiqa qidiruv boti yaratildi. Ishlashi uchun Render'da JAMENDO_CLIENT_ID ni sozlang. Foydalanish: /start."
                   : doc.type === "file-editor"
                     ? "✅ Fayl tahrirlovchi bot yaratildi. 3 kunlik bepul sinov boshlandi. /start yuborib faylni tahrirlashni boshlang."
                     : doc.type === "image-text"
