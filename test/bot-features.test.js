@@ -1683,6 +1683,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   }).png().toBuffer();
   const sentPhotos = [];
   const replies = [];
+  const edits = [];
   const WatermarkProfiles = {
     findOne: async ({ botId, userId }) => profiles.get(`${botId}:${userId}`) || null,
     updateOne: async ({ botId, userId }, update) => {
@@ -1697,6 +1698,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     if (method === "getFile") {
       return { file_path: payload.file_id === "logo" ? "logo.png" : "photo.png" };
     }
+    if (method === "editMessageText") edits.push(payload);
     return true;
   };
   bot.downloadFile = async (filePath) => filePath === "logo.png" ? logo : photo;
@@ -1719,7 +1721,19 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     message: { chat, from: user, text: "/start" },
   });
   assert.match(replies[0].text, /Watermark bot/);
-  await callback("wm:logo");
+  assert.deepEqual(
+    replies[0].options.reply_markup.keyboard.flat().map((button) => button.text),
+    ["📚 Shablonlar", "🖨 Pechat bosish"],
+  );
+  await bot.processUpdate({
+    message: { chat, from: user, text: "📚 Shablonlar" },
+  });
+  assert.ok(
+    replies.at(-1).options.reply_markup.inline_keyboard.flat()
+      .some((button) => button.callback_data === "wm:new-template"),
+  );
+  await callback("wm:new-template");
+  assert.equal(profiles.get("456:22").pendingTemplateName, "Namuna1");
   await bot.processUpdate({
     message: {
       chat,
@@ -1733,25 +1747,37 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   });
   assert.ok(Buffer.isBuffer(profiles.get("456:22").templates[0].logo));
   assert.equal(profiles.get("456:22").awaiting, null);
-  assert.ok(
-    replies.at(-1).options.reply_markup.inline_keyboard
-      .flat()
-      .some((button) => button.callback_data === "wm:logo-scale"),
+  const firstTemplate = profiles.get("456:22").templates[0];
+  assert.equal(firstTemplate.name, "Namuna1");
+
+  await callback(`wm:manage:${firstTemplate.id}`);
+  assert.match(edits.at(-1).text, /Namuna1 sozlamalari/);
+  assert.deepEqual(
+    edits.at(-1).reply_markup.inline_keyboard.flat().map((button) => button.callback_data),
+    [
+      `wm:template-logo:${firstTemplate.id}`,
+      `wm:template-shape:${firstTemplate.id}`,
+      `wm:template-scale:${firstTemplate.id}`,
+      `wm:template-position:${firstTemplate.id}`,
+      "wm:templates",
+    ],
   );
+  await callback(`wm:template-shape:${firstTemplate.id}`);
+  await callback(`wm:set-shape:${firstTemplate.id}:round`);
+  await callback(`wm:template-position:${firstTemplate.id}`);
+  await callback(`wm:set-position:${firstTemplate.id}:bottomCenter`);
+  await callback(`wm:template-scale:${firstTemplate.id}`);
+  assert.deepEqual(
+    edits.at(-1).reply_markup.inline_keyboard[0].map((button) => button.text),
+    ["8%", "10%", "20%", "30%"],
+  );
+  await callback(`wm:set-scale:${firstTemplate.id}:8`);
 
-  await callback("wm:set-shape:round");
-  await callback("wm:set-size:square");
-  await callback("wm:set-position:bottomCenter");
-  await callback("wm:set-logo-scale:small");
-  assert.equal(profiles.get("456:22").shape, "round");
-  assert.equal(profiles.get("456:22").size, "square");
-  assert.equal(profiles.get("456:22").position, "bottomCenter");
-  assert.equal(profiles.get("456:22").logoScale, "small");
-
-  await callback("wm:new-template");
   await bot.processUpdate({
-    message: { chat, from: user, text: "Brend" },
+    message: { chat, from: user, text: "📚 Shablonlar" },
   });
+  await callback("wm:new-template");
+  assert.equal(profiles.get("456:22").pendingTemplateName, "Namuna2");
   await bot.processUpdate({
     message: {
       chat,
@@ -1764,11 +1790,21 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     },
   });
   const secondTemplate = profiles.get("456:22").templates.find(
-    (template) => template.name === "Brend",
+    (template) => template.name === "Namuna2",
   );
   assert.ok(secondTemplate);
-  assert.equal(profiles.get("456:22").activeTemplateId, secondTemplate.id);
-  await callback("wm:set-size:landscape");
+  const savedFirstTemplate = profiles.get("456:22").templates.find(
+    (template) => template.id === firstTemplate.id,
+  );
+  assert.equal(savedFirstTemplate.shape, "round");
+  assert.equal(savedFirstTemplate.position, "bottomCenter");
+  assert.equal(savedFirstTemplate.logoScale, "8");
+  await callback(`wm:manage:${secondTemplate.id}`);
+  await callback(`wm:template-scale:${secondTemplate.id}`);
+  await callback(`wm:set-scale:${secondTemplate.id}:20`);
+  const savedTemplates = profiles.get("456:22").templates;
+  assert.equal(savedTemplates.find((item) => item.id === firstTemplate.id).logoScale, "8");
+  assert.equal(savedTemplates.find((item) => item.id === secondTemplate.id).logoScale, "20");
 
   await bot.processUpdate({
     message: {
@@ -1788,12 +1824,16 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   assert.ok(useTemplateButton);
   await callback(useTemplateButton.callback_data);
   assert.equal(sentPhotos.length, 1);
-  const selectedTemplateMetadata = await sharp(sentPhotos[0][1]).metadata();
-  assert.equal(selectedTemplateMetadata.width, 1280);
-  assert.equal(selectedTemplateMetadata.height, 720);
+  assert.match(sentPhotos[0][3].caption, /Namuna2/);
 
-  await callback("wm:select-template:default");
-  await callback("wm:apply");
+  await bot.processUpdate({
+    message: { chat, from: user, text: "🖨 Pechat bosish" },
+  });
+  const printTemplateButton = replies.at(-1).options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.callback_data === `wm:print-template:${firstTemplate.id}`);
+  assert.ok(printTemplateButton);
+  await callback(printTemplateButton.callback_data);
   await bot.processUpdate({
     message: {
       chat,
@@ -1806,9 +1846,10 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     },
   });
   assert.equal(sentPhotos.length, 2);
+  assert.match(sentPhotos[1][3].caption, /Namuna1/);
   const outputMetadata = await sharp(sentPhotos[1][1]).metadata();
-  assert.equal(outputMetadata.width, 1080);
-  assert.equal(outputMetadata.height, 1080);
+  assert.equal(outputMetadata.width, 100);
+  assert.equal(outputMetadata.height, 80);
   assert.equal(profiles.get("456:22").awaiting, null);
 });
 

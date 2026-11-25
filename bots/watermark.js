@@ -27,10 +27,17 @@ const POSITIONS = {
 };
 
 const LOGO_SCALES = {
-  small: { label: "Kichik (10%)", ratio: 0.1 },
-  medium: { label: "O'rtacha (15%)", ratio: 0.15 },
-  large: { label: "Katta (22%)", ratio: 0.22 },
-  xlarge: { label: "Juda katta (30%)", ratio: 0.3 },
+  8: { label: "8%", ratio: 0.08 },
+  10: { label: "10%", ratio: 0.1 },
+  20: { label: "20%", ratio: 0.2 },
+  30: { label: "30%", ratio: 0.3 },
+};
+
+const LEGACY_LOGO_SCALES = {
+  small: "8",
+  medium: "10",
+  large: "20",
+  xlarge: "30",
 };
 
 const isImageDocument = (document) => {
@@ -130,13 +137,13 @@ async function createWatermarkedImage({
   shape = "original",
   size = "original",
   position = "topRight",
-  logoScale = "medium",
+  logoScale = "10",
 }) {
   if (!SHAPES[shape]) throw new Error("Logo shakli noto'g'ri.");
   const sizeOption = SIZES[size];
   if (!sizeOption) throw new Error("Rasm o'lchami noto'g'ri.");
   if (!POSITIONS[position]) throw new Error("Watermark joyi noto'g'ri.");
-  const scaleOption = LOGO_SCALES[logoScale];
+  const scaleOption = LOGO_SCALES[LEGACY_LOGO_SCALES[logoScale] || logoScale];
   if (!scaleOption) throw new Error("Logo o'lchami noto'g'ri.");
 
   const source = sharp(imageBuffer, { limitInputPixels: MAX_PIXELS }).rotate();
@@ -189,7 +196,10 @@ async function createWatermarkedImage({
 
 function getTemplates(profile) {
   if (Array.isArray(profile.templates) && profile.templates.length) {
-    return profile.templates;
+    return profile.templates.map((template) => ({
+      ...template,
+      logoScale: normalizeScale(template.logoScale),
+    }));
   }
   if (!profile.logo) return [];
   return [{
@@ -199,8 +209,13 @@ function getTemplates(profile) {
     shape: profile.shape || "original",
     size: profile.size || "original",
     position: profile.position || "topRight",
-    logoScale: profile.logoScale || "medium",
+    logoScale: normalizeScale(profile.logoScale),
   }];
+}
+
+function normalizeScale(value) {
+  const normalized = LEGACY_LOGO_SCALES[value] || String(value || "10");
+  return LOGO_SCALES[normalized] ? normalized : "10";
 }
 
 function activeTemplate(profile, templates = getTemplates(profile)) {
@@ -209,52 +224,106 @@ function activeTemplate(profile, templates = getTemplates(profile)) {
     null;
 }
 
-function panelTitle(profile) {
-  const template = activeTemplate(profile);
-  return template
-    ? `Shablon: ${template.name}\nWatermark sozlamalari:`
-    : "Watermark sozlamalari:";
-}
-
-function templateFields(template) {
+function mainMenu() {
   return {
-    shape: template.shape || "original",
-    size: template.size || "original",
-    position: template.position || "topRight",
-    logoScale: template.logoScale || "medium",
-    activeTemplateId: template.id,
+    reply_markup: {
+      keyboard: [[
+        { text: "📚 Shablonlar" },
+        { text: "🖨 Pechat bosish" },
+      ]],
+      resize_keyboard: true,
+      is_persistent: true,
+    },
   };
 }
 
-function panel(profile) {
-  const templates = getTemplates(profile);
-  const selectedTemplate = activeTemplate(profile, templates);
+function templatesMenu(templates) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        ...templates.map((template) => [{
+          text: `🧩 ${template.name}`,
+          callback_data: `wm:manage:${template.id}`,
+        }]),
+        [{ text: "➕ Yangi shablon", callback_data: "wm:new-template" }],
+      ],
+    },
+  };
+}
+
+function templateMenu(template) {
   return {
     reply_markup: {
       inline_keyboard: [
         [{
-          text: `📚 Shablonlar (${templates.length})`,
-          callback_data: "wm:templates",
-        }],
-        [{ text: "➕ Logoni yuklash / almashtirish", callback_data: "wm:logo" }],
-        [{
-          text: `Logo shakli: ${SHAPES[selectedTemplate?.shape] || SHAPES.original}`,
-          callback_data: "wm:shape",
+          text: "🖼 Logoni yuklash / yangilash",
+          callback_data: `wm:template-logo:${template.id}`,
         }],
         [{
-          text: `Logo o'lchami: ${LOGO_SCALES[selectedTemplate?.logoScale]?.label || LOGO_SCALES.medium.label}`,
-          callback_data: "wm:logo-scale",
+          text: `🔷 Logo shakli: ${SHAPES[template.shape] || SHAPES.original}`,
+          callback_data: `wm:template-shape:${template.id}`,
         }],
         [{
-          text: `Rasm o'lchami: ${SIZES[selectedTemplate?.size]?.label || SIZES.original.label}`,
-          callback_data: "wm:size",
+          text: `📏 Logo o'lchami: ${LOGO_SCALES[template.logoScale]?.label || LOGO_SCALES[10].label}`,
+          callback_data: `wm:template-scale:${template.id}`,
         }],
         [{
-          text: `Joylashuvi: ${POSITIONS[selectedTemplate?.position] || POSITIONS.topRight}`,
-          callback_data: "wm:position",
+          text: `📍 Joylashuvi: ${POSITIONS[template.position] || POSITIONS.topRight}`,
+          callback_data: `wm:template-position:${template.id}`,
         }],
-        [{ text: "🖼 Rasmga watermark qo'yish", callback_data: "wm:apply" }],
+        [{ text: "⬅️ Shablonlarga qaytish", callback_data: "wm:templates" }],
       ],
+    },
+  };
+}
+
+function nextTemplateName(templates) {
+  const numbers = templates
+    .map((template) => template.name.match(/^Namuna\s*(\d+)$/i)?.[1])
+    .filter(Boolean)
+    .map(Number);
+  return `Namuna${Math.max(0, ...numbers) + 1}`;
+}
+
+function optionKeyboard(templateId, type) {
+  if (type === "shape") {
+    return [[
+      { text: "Asl holi", callback_data: `wm:set-shape:${templateId}:original` },
+      { text: "Kvadrat", callback_data: `wm:set-shape:${templateId}:square` },
+      { text: "Dumaloq", callback_data: `wm:set-shape:${templateId}:round` },
+    ]];
+  }
+  if (type === "scale") {
+    return [[8, 10, 20, 30].map((scale) => ({
+      text: `${scale}%`,
+      callback_data: `wm:set-scale:${templateId}:${scale}`,
+    }))];
+  }
+  return [
+    [
+      { text: "Yuqori o'ng", callback_data: `wm:set-position:${templateId}:topRight` },
+      { text: "Yuqori chap", callback_data: `wm:set-position:${templateId}:topLeft` },
+    ],
+    [{
+      text: "Pastda, markazda",
+      callback_data: `wm:set-position:${templateId}:bottomCenter`,
+    }],
+  ];
+}
+
+function updateTemplate(templates, templateId, changes) {
+  return templates.map((template) =>
+    template.id === templateId ? { ...template, ...changes } : template);
+}
+
+function templateById(templates, id) {
+  return templates.find((template) => template.id === id);
+}
+
+function templateSettingsMarkup(templateId, type) {
+  return {
+    reply_markup: {
+      inline_keyboard: optionKeyboard(templateId, type),
     },
   };
 }
@@ -275,18 +344,44 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
     );
   };
 
+  const renderWatermark = async (ctx, userId, template, imageFileId) => {
+    if (!template?.logo) {
+      await ctx.reply("Tanlangan shablonda logo yo'q. Avval shablon ichida logo yuklang.");
+      return;
+    }
+    try {
+      const buffer = await downloadImage(bot, imageFileId);
+      const result = await createWatermarkedImage({
+        imageBuffer: buffer,
+        logoBuffer: normalizeImageBuffer(template.logo),
+        shape: template.shape || "original",
+        size: template.size || "original",
+        position: template.position || "topRight",
+        logoScale: template.logoScale || "10",
+      });
+      await saveProfile(userId, { awaiting: null }, {
+        pendingImageId: "",
+        pendingTemplateId: "",
+      });
+      await bot.sendPhoto(ctx.chat.id, result, "watermarked.jpg", {
+        caption: `✅ Pechat tayyor. Shablon: ${template.name}`,
+      });
+    } catch (error) {
+      await ctx.reply(`❌ Rasmni qayta ishlab bo'lmadi: ${error.message}`);
+    }
+  };
+
   bot.command("start", async (ctx) => {
-    const profile = (await getProfile(ctx.from.id)) || {};
     await ctx.reply(
       "Watermark botga xush kelibsiz!\n\n" +
-        "Watermark shablonlarini yarating va har biriga alohida logo hamda sozlamalarni tanlang.\n" +
-        "Buyruqsiz rasm yuborsangiz, qaysi shablonni ishlatishni so'rayman.",
-      panel(profile),
+        "Shablonlarni boshqaring yoki rasmga pechat bosing.\n" +
+        "Buyruqsiz yuborilgan rasm uchun shablon tanlash so'raladi.",
+      mainMenu(),
     );
   });
 
   bot.onCallbackData(
-    /^wm:(logo|shape|logo-scale|size|position|apply|templates|new-template|back|select-template:[\w-]+|use-template:[\w-]+|set-shape:(original|square|round)|set-logo-scale:(small|medium|large|xlarge)|set-size:(original|landscape|portrait|square|threeFour)|set-position:(topRight|topLeft|bottomCenter))$/,
+    /^wm:[\w:-]+$/,
     async (ctx) => {
       await ctx.answer();
       const userId = ctx.from.id;
@@ -295,199 +390,151 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
       const selectedTemplate = activeTemplate(profile, templates);
 
       if (ctx.text === "wm:templates") {
-        await ctx.edit("Watermark shablonini tanlang yoki yangisini yarating:", {
-          reply_markup: {
-            inline_keyboard: [
-              ...templates.map((template) => [{
-                text: `${template.id === selectedTemplate?.id ? "✅ " : ""}${template.name}`,
-                callback_data: `wm:select-template:${template.id}`,
-              }]),
-              [{ text: "➕ Yangi shablon yaratish", callback_data: "wm:new-template" }],
-              [{ text: "⬅️ Sozlamalarga qaytish", callback_data: "wm:back" }],
-            ],
-          },
-        });
+        await ctx.edit("Shablonlar ro'yxati:", templatesMenu(templates));
         return;
       }
 
       if (ctx.text === "wm:new-template") {
-        await saveProfile(userId, { awaiting: "template-name" });
-        await ctx.edit("Yangi shablon nomini yuboring (1–40 belgi). Bekor qilish: /cancel");
+        const name = nextTemplateName(templates);
+        const id = randomUUID().replace(/-/g, "");
+        await saveProfile(userId, {
+          awaiting: "template-logo",
+          pendingTemplateId: id,
+          pendingTemplateName: name,
+        });
+        await ctx.edit(`🖼 ${name} uchun logo rasmini yuboring. Bekor qilish: /cancel`);
         return;
       }
 
-      if (ctx.text === "wm:back") {
-        await ctx.edit(panelTitle(profile), panel(profile));
-        return;
-      }
-
-      const selectTemplateMatch = ctx.text.match(/^wm:select-template:([\w-]+)$/);
-      const useTemplateMatch = ctx.text.match(/^wm:use-template:([\w-]+)$/);
-      const templateMatch = selectTemplateMatch || useTemplateMatch;
-      if (templateMatch) {
-        const template = templates.find((item) => item.id === templateMatch[1]);
+      const manageMatch = ctx.text.match(/^wm:(?:manage|select-template):([\w-]+)$/);
+      if (manageMatch) {
+        const template = templateById(templates, manageMatch[1]);
         if (!template) {
-          await ctx.edit("Shablon topilmadi. Ro'yxatni yangilang.", panel(profile));
+          await ctx.edit("Shablon topilmadi. Ro'yxatni yangilang.", templatesMenu(templates));
+          return;
+        }
+        await saveProfile(userId, { templates }, { logo: "" });
+        await ctx.edit(`⚙️ ${template.name} sozlamalari:`, templateMenu(template));
+        return;
+      }
+
+      const logoMatch = ctx.text.match(/^wm:template-logo:([\w-]+)$/);
+      if (logoMatch) {
+        const template = templateById(templates, logoMatch[1]);
+        if (!template) {
+          await ctx.edit("Shablon topilmadi.", templatesMenu(templates));
           return;
         }
         await saveProfile(userId, {
-          templates,
-          ...templateFields(template),
-        }, { logo: "" });
-        if (selectTemplateMatch) {
-          await ctx.edit(panelTitle({
-            ...profile,
-            ...templateFields(template),
-          }), panel({
-            ...profile,
-            ...templateFields(template),
-          }));
+          awaiting: "template-logo",
+          pendingTemplateId: template.id,
+          pendingTemplateName: template.name,
+        });
+        await ctx.edit(`🖼 ${template.name} uchun logo rasmini yuboring.`);
+        return;
+      }
+
+      const submenuMatch = ctx.text.match(
+        /^wm:template-(shape|scale|position):([\w-]+)$/,
+      );
+      if (submenuMatch) {
+        const template = templateById(templates, submenuMatch[2]);
+        if (!template) {
+          await ctx.edit("Shablon topilmadi.", templatesMenu(templates));
           return;
         }
-        if (!profile.pendingImageId) {
-          await ctx.edit("Tanlash uchun kutilayotgan rasm yo'q.", panel(profile));
+        const type = submenuMatch[1];
+        const text = type === "shape"
+          ? "Logo shaklini tanlang:"
+          : type === "scale"
+            ? "Logo o'lchamini tanlang:"
+            : "Watermark joylashuvini tanlang:";
+        await ctx.edit(text, templateSettingsMarkup(template.id, type));
+        return;
+      }
+
+      const updateMatch = ctx.text.match(
+        /^wm:set-(shape|scale|position):([\w-]+):([\w-]+)$/,
+      );
+      const legacyUpdateMatch = ctx.text.match(
+        /^wm:set-(shape|logo-scale|position):(.+)$/,
+      );
+      const settingMatch = updateMatch || legacyUpdateMatch;
+      if (settingMatch) {
+        const type = settingMatch[1] === "logo-scale" ? "scale" : settingMatch[1];
+        const templateId = updateMatch ? settingMatch[2] : selectedTemplate?.id;
+        const value = updateMatch ? settingMatch[3] : settingMatch[2];
+        const normalizedScale = LEGACY_LOGO_SCALES[value] || value;
+        const validValue = type === "shape"
+          ? Boolean(SHAPES[value])
+          : type === "scale"
+            ? Boolean(LOGO_SCALES[normalizedScale])
+            : Boolean(POSITIONS[value]);
+        const template = templateById(templates, templateId);
+        if (!template || !validValue) return;
+        const changes = type === "shape"
+          ? { shape: value }
+          : type === "scale"
+            ? { logoScale: normalizedScale }
+            : { position: value };
+        const updatedTemplates = updateTemplate(templates, templateId, changes);
+        const updatedTemplate = templateById(updatedTemplates, templateId);
+        await saveProfile(userId, { templates: updatedTemplates }, { logo: "" });
+        await ctx.edit(
+          `✅ ${updatedTemplate.name} shabloni yangilandi.`,
+          templateMenu(updatedTemplate),
+        );
+        return;
+      }
+
+      const printMatch = ctx.text.match(/^wm:print-template:([\w-]+)$/);
+      if (printMatch) {
+        const template = templateById(templates, printMatch[1]);
+        if (!template?.logo) {
+          await ctx.edit("Bu shablonda logo yo'q. Avval logoni yuklang.");
           return;
         }
-        try {
-          const buffer = await downloadImage(bot, profile.pendingImageId);
-          const result = await createWatermarkedImage({
-            imageBuffer: buffer,
-            logoBuffer: normalizeImageBuffer(template.logo),
-            shape: template.shape || "original",
-            size: template.size || "original",
-            position: template.position || "topRight",
-            logoScale: template.logoScale || "medium",
-          });
-          await saveProfile(userId, { awaiting: null }, { pendingImageId: "" });
-          await bot.sendPhoto(ctx.chat.id, result, "watermarked.jpg", {
-            caption: `✅ Watermark tayyor. Shablon: ${template.name}`,
-          });
-        } catch (error) {
-          await ctx.reply(`❌ Rasmni qayta ishlab bo'lmadi: ${error.message}`);
+        await saveProfile(userId, {
+          awaiting: "image",
+          pendingTemplateId: template.id,
+        }, { pendingImageId: "" });
+        await ctx.edit(`🖨 ${template.name} tanlandi. Pechat bosiladigan rasmni yuboring.`);
+        return;
+      }
+
+      const useMatch = ctx.text.match(/^wm:use-template:([\w-]+)$/);
+      if (useMatch) {
+        const template = templateById(templates, useMatch[1]);
+        if (!template || !profile.pendingImageId) {
+          await ctx.edit("Shablon yoki kutilayotgan rasm topilmadi.");
+          return;
         }
+        await renderWatermark(ctx, userId, template, profile.pendingImageId);
         return;
       }
 
       if (ctx.text === "wm:logo") {
-        await saveProfile(userId, { awaiting: "logo" });
-        await ctx.edit("Logo rasmini yuboring. Almashtirilgan logo profilingizda saqlanadi.");
+        const id = selectedTemplate?.id || randomUUID().replace(/-/g, "");
+        await saveProfile(userId, {
+          awaiting: "template-logo",
+          pendingTemplateId: id,
+          pendingTemplateName: selectedTemplate?.name || nextTemplateName(templates),
+        });
+        await ctx.edit("Logo rasmini yuboring. Bekor qilish: /cancel");
         return;
       }
 
       if (ctx.text === "wm:apply") {
         if (!selectedTemplate?.logo) {
-          await ctx.edit("Avval logotipingizni yuklang.", panel(profile));
+          await ctx.edit("Avval shablon yarating va unga logo yuklang.");
           return;
         }
-        await saveProfile(userId, { awaiting: "image" });
-        await ctx.edit("Watermark qo'yiladigan rasmni yuboring. Bekor qilish: /cancel");
-        return;
-      }
-
-      if (ctx.text === "wm:shape") {
-        await ctx.edit("Logo shaklini tanlang:", {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "Asl holi", callback_data: "wm:set-shape:original" },
-              { text: "Kvadrat", callback_data: "wm:set-shape:square" },
-              { text: "Dumaloq", callback_data: "wm:set-shape:round" },
-            ]],
-          },
-        });
-        return;
-      }
-
-      if (ctx.text === "wm:logo-scale") {
-        await ctx.edit("Watermark logo o'lchamini tanlang:", {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "Kichik 10%", callback_data: "wm:set-logo-scale:small" },
-                { text: "O'rtacha 15%", callback_data: "wm:set-logo-scale:medium" },
-              ],
-              [
-                { text: "Katta 22%", callback_data: "wm:set-logo-scale:large" },
-                { text: "Juda katta 30%", callback_data: "wm:set-logo-scale:xlarge" },
-              ],
-            ],
-          },
-        });
-        return;
-      }
-
-      if (ctx.text === "wm:size") {
-        await ctx.edit("Tayyor rasm o'lchamini tanlang:", {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "Asl holi", callback_data: "wm:set-size:original" },
-                { text: "16:9", callback_data: "wm:set-size:landscape" },
-              ],
-              [
-                { text: "9:16", callback_data: "wm:set-size:portrait" },
-                { text: "Kvadrat", callback_data: "wm:set-size:square" },
-              ],
-              [{ text: "3:4", callback_data: "wm:set-size:threeFour" }],
-            ],
-          },
-        });
-        return;
-      }
-
-      if (ctx.text === "wm:position") {
-        await ctx.edit("Watermark joyini tanlang:", {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "Yuqori o'ng", callback_data: "wm:set-position:topRight" },
-                { text: "Yuqori chap", callback_data: "wm:set-position:topLeft" },
-              ],
-              [{ text: "Pastda, markazda", callback_data: "wm:set-position:bottomCenter" }],
-            ],
-          },
-        });
-        return;
-      }
-
-      const shapeMatch = ctx.text.match(/^wm:set-shape:(original|square|round)$/);
-      const sizeMatch = ctx.text.match(
-        /^wm:set-size:(original|landscape|portrait|square|threeFour)$/,
-      );
-      const logoScaleMatch = ctx.text.match(
-        /^wm:set-logo-scale:(small|medium|large|xlarge)$/,
-      );
-      const positionMatch = ctx.text.match(
-        /^wm:set-position:(topRight|topLeft|bottomCenter)$/,
-      );
-      const settingMatch = shapeMatch || sizeMatch || logoScaleMatch || positionMatch;
-      if (settingMatch && selectedTemplate) {
-        const changedTemplate = {
-          ...selectedTemplate,
-          ...(shapeMatch ? { shape: shapeMatch[1] } : {}),
-          ...(logoScaleMatch ? { logoScale: logoScaleMatch[1] } : {}),
-          ...(sizeMatch ? { size: sizeMatch[1] } : {}),
-          ...(positionMatch ? { position: positionMatch[1] } : {}),
-        };
-        const changedTemplates = templates.map((template) =>
-          template.id === changedTemplate.id ? changedTemplate : template);
         await saveProfile(userId, {
-          templates: changedTemplates,
-          ...templateFields(changedTemplate),
-        });
+          awaiting: "image",
+          pendingTemplateId: selectedTemplate.id,
+        }, { pendingImageId: "" });
+        await ctx.edit("Pechat bosiladigan rasmni yuboring. Bekor qilish: /cancel");
       }
-
-      const updatedProfile = {
-        ...profile,
-        ...(settingMatch && selectedTemplate ? {
-          ...selectedTemplate,
-          ...(shapeMatch ? { shape: shapeMatch[1] } : {}),
-          ...(logoScaleMatch ? { logoScale: logoScaleMatch[1] } : {}),
-          ...(sizeMatch ? { size: sizeMatch[1] } : {}),
-          ...(positionMatch ? { position: positionMatch[1] } : {}),
-          activeTemplateId: selectedTemplate.id,
-        } : {}),
-      };
-      await ctx.edit(panelTitle(updatedProfile), panel(updatedProfile));
     },
   );
 
@@ -495,17 +542,27 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
     const userId = ctx.from?.id;
     if (!userId) return;
     const profile = await getProfile(userId);
-    if (profile?.awaiting === "template-name") {
-      const name = ctx.message.text?.trim();
-      if (!name || name.length > 40) {
-        await ctx.reply("Shablon nomi 1–40 belgidan iborat bo'lsin. Qayta yuboring.");
+
+    if (ctx.message.text === "📚 Shablonlar") {
+      const templates = getTemplates(profile || {});
+      await ctx.reply("Shablonlar ro'yxati:", templatesMenu(templates));
+      return;
+    }
+
+    if (ctx.message.text === "🖨 Pechat bosish") {
+      const templates = getTemplates(profile || {});
+      if (!templates.length) {
+        await ctx.reply("Avval 📚 Shablonlar bo'limida yangi shablon yarating.");
         return;
       }
-      await saveProfile(userId, {
-        awaiting: "template-logo",
-        pendingTemplateName: name,
+      await ctx.reply("Pechat bosiladigan shablonni tanlang:", {
+        reply_markup: {
+          inline_keyboard: templates.map((template) => [{
+            text: `🖨 ${template.name}`,
+            callback_data: `wm:print-template:${template.id}`,
+          }]),
+        },
       });
-      await ctx.reply(`“${name}” shabloni uchun logo rasmini yuboring.`);
       return;
     }
 
@@ -524,74 +581,56 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
           throw new Error("Logo faylini kichraytirib bo'lmadi. Boshqa rasm yuboring.");
         }
         const templates = getTemplates(profile);
-        const selectedTemplate = activeTemplate(profile, templates);
-        const isNewTemplate = profile.awaiting === "template-logo";
+        const id = profile.pendingTemplateId ||
+          activeTemplate(profile, templates)?.id ||
+          randomUUID().replace(/-/g, "");
+        const oldTemplate = templateById(templates, id);
         const template = {
-          ...(isNewTemplate ? {} : selectedTemplate || {}),
-          id: isNewTemplate
-            ? randomUUID().replace(/-/g, "")
-            : selectedTemplate?.id || "default",
-          name: isNewTemplate
-            ? profile.pendingTemplateName
-            : selectedTemplate?.name || "Asosiy",
+          ...(oldTemplate || {}),
+          id,
+          name: oldTemplate?.name || profile.pendingTemplateName || "Namuna1",
           logo,
-          shape: selectedTemplate?.shape || "original",
-          size: selectedTemplate?.size || "original",
-          position: selectedTemplate?.position || "topRight",
-          logoScale: selectedTemplate?.logoScale || "medium",
+          shape: oldTemplate?.shape || "original",
+          size: oldTemplate?.size || "original",
+          position: oldTemplate?.position || "topRight",
+          logoScale: oldTemplate?.logoScale || "10",
         };
-        const updatedTemplates = isNewTemplate || !selectedTemplate
-          ? [...templates, template]
-          : templates.map((item) => item.id === template.id ? template : item);
+        const updatedTemplates = oldTemplate
+          ? updateTemplate(templates, id, template)
+          : [...templates, template];
         await saveProfile(userId, {
           templates: updatedTemplates,
-          ...templateFields(template),
+          activeTemplateId: id,
           awaiting: null,
-        }, { pendingTemplateName: "", logo: "" });
-        await ctx.reply(`✅ “${template.name}” shablonining logosi saqlandi.`, panel({
-          ...profile,
-          templates: updatedTemplates,
-          ...templateFields(template),
-        }));
+        }, { pendingTemplateName: "", pendingTemplateId: "", logo: "" });
+        await ctx.reply(
+          `✅ ${template.name} shablonining logosi saqlandi. Sozlamalarni 📚 Shablonlar bo'limidan o'zgartiring.`,
+          mainMenu(),
+        );
       } catch (error) {
         await ctx.reply(`❌ Logo saqlanmadi: ${error.message}`);
       }
       return;
     }
 
+    if (profile?.awaiting === "image") {
+      const templates = getTemplates(profile);
+      const template = templateById(templates, profile.pendingTemplateId) ||
+        activeTemplate(profile, templates);
+      if (!template) {
+        await saveProfile(userId, { awaiting: null });
+        await ctx.reply("Tanlangan shablon topilmadi. Qayta tanlang.");
+      } else {
+        await renderWatermark(ctx, userId, template, image.file_id);
+      }
+      return;
+    }
+
     const templates = getTemplates(profile || {});
     if (!templates.length) {
-      await ctx.reply("Avval /start orqali watermark shabloni yarating va unga logo yuklang.");
+      await ctx.reply("Avval 📚 Shablonlar bo'limida yangi shablon yarating.");
       return;
     }
-
-    if (profile?.awaiting === "image") {
-      const template = activeTemplate(profile, templates);
-      if (!template?.logo) {
-        await saveProfile(userId, { awaiting: null });
-        await ctx.reply("Tanlangan shablonda logo yo'q. /start orqali logo yuklang.");
-        return;
-      }
-      try {
-        const buffer = await downloadImage(bot, image.file_id);
-        const result = await createWatermarkedImage({
-          imageBuffer: buffer,
-          logoBuffer: normalizeImageBuffer(template.logo),
-          shape: template.shape || "original",
-          size: template.size || "original",
-          position: template.position || "topRight",
-          logoScale: template.logoScale || "medium",
-        });
-        await saveProfile(userId, { awaiting: null });
-        await bot.sendPhoto(ctx.chat.id, result, "watermarked.jpg", {
-          caption: `✅ Watermark tayyor. Shablon: ${template.name}`,
-        });
-      } catch (error) {
-        await ctx.reply(`❌ Rasmni qayta ishlab bo'lmadi: ${error.message}`);
-      }
-      return;
-    }
-
     await saveProfile(userId, {
       awaiting: "template-selection",
       pendingImageId: image.file_id,
@@ -614,6 +653,7 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
       if (!profile?.awaiting) return false;
       await saveProfile(userId, { awaiting: null }, {
         pendingImageId: "",
+        pendingTemplateId: "",
         pendingTemplateName: "",
       });
       return true;
