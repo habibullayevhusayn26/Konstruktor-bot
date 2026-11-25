@@ -19,7 +19,6 @@ const registerQrGenerator = require("../bots/qr-generator");
 const registerNicknameFont = require("../bots/nickname-font");
 const registerWatermarkBot = require("../bots/watermark");
 const { createWatermarkedImage } = require("../bots/watermark");
-const registerMusicSearchBot = require("../bots/music-search");
 const registerFileEditor = require("../bots/file-editor");
 const registerImageTextEditor = require("../bots/image-text-editor");
 const { replaceTemplateTitle } = require("../bots/image-text-editor");
@@ -965,12 +964,8 @@ test("billing defaults and calendar monthly due dates are correct", () => {
     monthly: 1000,
     enabled: true,
   });
-  assert.deepEqual(settings.prices.music, {
-    initial: 10000,
-    monthly: 1000,
-    enabled: true,
-  });
-  assert.equal(settings.sampleBots.music, "");
+  assert.equal(Object.hasOwn(settings.prices, "music"), false);
+  assert.equal(Object.hasOwn(settings.sampleBots, "music"), false);
   assert.equal(settings.sampleBots.qr, "sample_qr_bot");
   assert.equal(settings.sampleBots.watermark, "");
   assert.equal(parseSampleBotUsername("@sample_bot"), "sample_bot");
@@ -1051,6 +1046,26 @@ test("due bot billing debits the balance once or suspends on insufficient funds"
   assert.equal(bot.billingStatus, "suspended");
   assert.equal(balance, 500);
   assert.equal(transactions.length, 1);
+});
+
+test("billing skips bots whose type was removed from the maker", async () => {
+  const service = new BillingService({
+    Bots: {
+      find: () => [{
+        _id: 56,
+        type: "music",
+      }],
+    },
+  });
+  let charged = false;
+  service.chargeBot = async () => {
+    charged = true;
+  };
+
+  const summary = await service.processDueBots();
+
+  assert.equal(charged, false);
+  assert.deepEqual(summary, { charged: 0, suspended: 0, resumed: 0 });
 });
 
 test("manual top-up approval credits the balance only once", async () => {
@@ -1334,7 +1349,6 @@ test("each bot instance gets the correct token-free JavaScript file", async () =
     ["nickname", "nickname-font"],
     ["footer", "channel-footer"],
     ["watermark", "watermark"],
-    ["music", "music-search"],
     ["file-editor", "file-editor"],
     ["image-text", "image-text-editor"],
   ]) {
@@ -1352,104 +1366,6 @@ test("each bot instance gets the correct token-free JavaScript file", async () =
       await removeGeneratedBotFile(botId);
     }
   }
-});
-
-test("music bot searches licensed Jamendo tracks and reuses Telegram file IDs", async () => {
-  const bot = new BotConstructor("test-token");
-  const replies = [];
-  const audioRequests = [];
-  const fetchRequests = [];
-  const licensedUrl = "https://prod-1.storage.jamendo.com/?trackid=123&format=mp31";
-  const tracks = [
-    {
-      id: 123,
-      name: "Open Song",
-      artist_name: "Open Artist",
-      duration: 125,
-      audio: licensedUrl,
-      shareurl: "https://www.jamendo.com/track/123",
-      license_ccurl: "https://creativecommons.org/licenses/by/4.0/",
-    },
-    {
-      id: 456,
-      name: "Noncommercial Song",
-      artist_name: "Artist",
-      duration: 90,
-      audio: "https://prod-1.storage.jamendo.com/?trackid=456&format=mp31",
-      license_ccurl: "https://creativecommons.org/licenses/by-nc/4.0/",
-    },
-    {
-      id: 789,
-      name: "External Audio",
-      artist_name: "Artist",
-      duration: 90,
-      audio: "https://example.com/song.mp3",
-      license_ccurl: "https://creativecommons.org/licenses/by/4.0/",
-    },
-  ];
-  const fetchImpl = async (url) => {
-    fetchRequests.push(new URL(url));
-    return {
-      ok: true,
-      json: async () => ({
-        headers: { status: "success" },
-        results: tracks,
-      }),
-    };
-  };
-  bot.api = async (method, payload) => {
-    if (method === "sendAudio") {
-      audioRequests.push(payload);
-      return {
-        audio: {
-          file_id: payload.audio === licensedUrl ? "telegram-cached-file-id" : payload.audio,
-        },
-      };
-    }
-    return true;
-  };
-  bot.sendMessage = async (_chatId, text, options) => replies.push({ text, options });
-  registerMusicSearchBot(bot, {
-    doc: { _id: 456001, username: "test_music_bot" },
-    clientId: "jamendo-client-id",
-    fetchImpl,
-  });
-
-  const user = { id: 72 };
-  const chat = { id: 72, type: "private" };
-  await bot.processUpdate({
-    message: { chat, from: user, text: "/start" },
-  });
-  assert.doesNotMatch(replies[0].text, /Jamendo/i);
-  await bot.processUpdate({
-    message: { chat, from: user, text: "Open Song" },
-  });
-  assert.equal(fetchRequests.length, 1);
-  assert.equal(fetchRequests[0].searchParams.get("namesearch"), "Open Song");
-  assert.equal(fetchRequests[0].searchParams.get("audioformat"), "mp31");
-  assert.match(replies[1].text, /Open Song — Open Artist/);
-  assert.doesNotMatch(replies[1].text, /Noncommercial Song|External Audio|Jamendo/i);
-  const playButton = replies[1].options.reply_markup.inline_keyboard[0][0];
-  assert.equal(playButton.callback_data, "music:play:0");
-
-  const play = async () => bot.processUpdate({
-    callback_query: {
-      id: `play-${audioRequests.length}`,
-      data: "music:play:0",
-      from: user,
-      message: { chat, message_id: 1 },
-    },
-  });
-  await play();
-  await play();
-
-  assert.equal(audioRequests.length, 2);
-  assert.equal(audioRequests[0].audio, licensedUrl);
-  assert.equal(audioRequests[0].title, "Open Song");
-  assert.equal(audioRequests[0].performer, "Open Artist");
-  assert.equal(audioRequests[0].caption, "👉 @test_music_bot");
-  assert.equal(audioRequests[1].audio, "telegram-cached-file-id");
-  assert.equal(audioRequests[1].caption, "👉 @test_music_bot");
 });
 
 test("image text editor replaces only the sample title", async () => {

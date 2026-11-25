@@ -6,7 +6,6 @@ const BOT_TYPES = [
   "nickname",
   "footer",
   "watermark",
-  "music",
   "file-editor",
   "image-text",
 ];
@@ -264,6 +263,7 @@ class BillingService {
 
     const summary = { charged: 0, suspended: 0, resumed: 0 };
     for await (const bot of this.Bots.find(filter)) {
+      if (!BOT_TYPES.includes(bot.type)) continue;
       const result = await this.chargeBot(bot._id, now);
       if (!result) continue;
 
