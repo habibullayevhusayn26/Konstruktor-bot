@@ -542,14 +542,18 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
     const userId = ctx.from?.id;
     if (!userId) return;
     const profile = await getProfile(userId);
+    const menuText = (ctx.message.text || "")
+      .trim()
+      .replace(/^[^\p{L}\p{N}]+/u, "")
+      .toLowerCase();
 
-    if (ctx.message.text === "📚 Shablonlar") {
+    if (menuText === "shablonlar") {
       const templates = getTemplates(profile || {});
       await ctx.reply("Shablonlar ro'yxati:", templatesMenu(templates));
       return;
     }
 
-    if (ctx.message.text === "🖨 Pechat bosish") {
+    if (menuText === "pechat bosish") {
       const templates = getTemplates(profile || {});
       if (!templates.length) {
         await ctx.reply("Avval 📚 Shablonlar bo'limida yangi shablon yarating.");

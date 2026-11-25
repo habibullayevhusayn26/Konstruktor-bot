@@ -1726,7 +1726,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     ["📚 Shablonlar", "🖨 Pechat bosish"],
   );
   await bot.processUpdate({
-    message: { chat, from: user, text: "📚 Shablonlar" },
+    message: { chat, from: user, text: "Shablonlar" },
   });
   assert.ok(
     replies.at(-1).options.reply_markup.inline_keyboard.flat()
@@ -1774,7 +1774,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   await callback(`wm:set-scale:${firstTemplate.id}:8`);
 
   await bot.processUpdate({
-    message: { chat, from: user, text: "📚 Shablonlar" },
+    message: { chat, from: user, text: "Shablonlar" },
   });
   await callback("wm:new-template");
   assert.equal(profiles.get("456:22").pendingTemplateName, "Namuna2");
@@ -1827,7 +1827,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   assert.match(sentPhotos[0][3].caption, /Namuna2/);
 
   await bot.processUpdate({
-    message: { chat, from: user, text: "🖨 Pechat bosish" },
+    message: { chat, from: user, text: "Pechat bosish" },
   });
   const printTemplateButton = replies.at(-1).options.reply_markup.inline_keyboard
     .flat()
