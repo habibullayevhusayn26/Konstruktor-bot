@@ -1764,6 +1764,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       `wm:template-scale:${firstTemplate.id}`,
       `wm:template-position:${firstTemplate.id}`,
       `wm:template-name:${firstTemplate.id}`,
+      `wm:template-delete:${firstTemplate.id}`,
       "wm:templates",
     ],
   );
@@ -1841,6 +1842,24 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   await callback(useTemplateButton.callback_data);
   assert.equal(sentPhotos.length, 1);
   assert.match(sentPhotos[0][3].caption, /Namuna2/);
+
+  await callback(`wm:template-delete:${secondTemplate.id}`);
+  const confirmationButtons = edits.at(-1).reply_markup.inline_keyboard.flat();
+  assert.ok(confirmationButtons.some(
+    (button) => button.callback_data === `wm:confirm-delete:${secondTemplate.id}`,
+  ));
+  await callback(`wm:manage:${secondTemplate.id}`);
+  assert.ok(profiles.get("456:22").templates.some(
+    (template) => template.id === secondTemplate.id,
+  ));
+  await callback(`wm:template-delete:${secondTemplate.id}`);
+  await callback(`wm:confirm-delete:${secondTemplate.id}`);
+  assert.ok(!profiles.get("456:22").templates.some(
+    (template) => template.id === secondTemplate.id,
+  ));
+  assert.ok(profiles.get("456:22").templates.some(
+    (template) => template.id === firstTemplate.id,
+  ));
 
   await bot.processUpdate({
     message: { chat, from: user, text: "Pechat bosish" },

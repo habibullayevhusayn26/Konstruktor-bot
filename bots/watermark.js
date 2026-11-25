@@ -275,6 +275,10 @@ function templateMenu(template) {
           text: "✏️ Shablon nomini o'zgartirish",
           callback_data: `wm:template-name:${template.id}`,
         }],
+        [{
+          text: "🗑 Shablonni o'chirish",
+          callback_data: `wm:template-delete:${template.id}`,
+        }],
         [{ text: "⬅️ Shablonlarga qaytish", callback_data: "wm:templates" }],
       ],
     },
@@ -432,6 +436,59 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
           pendingTemplateId: template.id,
         });
         await ctx.edit(`“${template.name}” shabloni uchun yangi nom yuboring (1–40 belgi).`);
+        return;
+      }
+
+      const deleteMatch = ctx.text.match(/^wm:template-delete:([\w-]+)$/);
+      if (deleteMatch) {
+        const template = templateById(templates, deleteMatch[1]);
+        if (!template) {
+          await ctx.edit("Shablon topilmadi.", templatesMenu(templates));
+          return;
+        }
+        await ctx.edit(
+          `“${template.name}” shablonini o'chirmoqchimisiz? Bu amalni qaytarib bo'lmaydi.`,
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                {
+                  text: "✅ Ha, o'chirish",
+                  callback_data: `wm:confirm-delete:${template.id}`,
+                },
+                {
+                  text: "Bekor qilish",
+                  callback_data: `wm:manage:${template.id}`,
+                },
+              ]],
+            },
+          },
+        );
+        return;
+      }
+
+      const confirmDeleteMatch = ctx.text.match(/^wm:confirm-delete:([\w-]+)$/);
+      if (confirmDeleteMatch) {
+        const template = templateById(templates, confirmDeleteMatch[1]);
+        if (!template) {
+          await ctx.edit("Shablon allaqachon o'chirilgan.", templatesMenu(templates));
+          return;
+        }
+        const updatedTemplates = templates.filter(
+          (item) => item.id !== template.id,
+        );
+        const fields = { templates: updatedTemplates };
+        const unset = { logo: "" };
+        if (profile.activeTemplateId === template.id) unset.activeTemplateId = "";
+        if (profile.pendingTemplateId === template.id) {
+          fields.awaiting = null;
+          unset.pendingTemplateId = "";
+          unset.pendingTemplateName = "";
+        }
+        await saveProfile(userId, fields, unset);
+        await ctx.edit(
+          `✅ “${template.name}” shabloni o'chirildi.`,
+          templatesMenu(updatedTemplates),
+        );
         return;
       }
 
