@@ -1733,6 +1733,10 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       .some((button) => button.callback_data === "wm:new-template"),
   );
   await callback("wm:new-template");
+  assert.equal(profiles.get("456:22").awaiting, "template-name");
+  await bot.processUpdate({
+    message: { chat, from: user, text: "Namuna1" },
+  });
   assert.equal(profiles.get("456:22").pendingTemplateName, "Namuna1");
   await bot.processUpdate({
     message: {
@@ -1759,8 +1763,17 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       `wm:template-shape:${firstTemplate.id}`,
       `wm:template-scale:${firstTemplate.id}`,
       `wm:template-position:${firstTemplate.id}`,
+      `wm:template-name:${firstTemplate.id}`,
       "wm:templates",
     ],
+  );
+  await callback(`wm:template-name:${firstTemplate.id}`);
+  await bot.processUpdate({
+    message: { chat, from: user, text: "Brend logosi" },
+  });
+  assert.equal(
+    profiles.get("456:22").templates[0].name,
+    "Brend logosi",
   );
   await callback(`wm:template-shape:${firstTemplate.id}`);
   await callback(`wm:set-shape:${firstTemplate.id}:round`);
@@ -1777,6 +1790,9 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     message: { chat, from: user, text: "Shablonlar" },
   });
   await callback("wm:new-template");
+  await bot.processUpdate({
+    message: { chat, from: user, text: "Namuna2" },
+  });
   assert.equal(profiles.get("456:22").pendingTemplateName, "Namuna2");
   await bot.processUpdate({
     message: {
@@ -1846,7 +1862,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
     },
   });
   assert.equal(sentPhotos.length, 2);
-  assert.match(sentPhotos[1][3].caption, /Namuna1/);
+  assert.match(sentPhotos[1][3].caption, /Brend logosi/);
   const outputMetadata = await sharp(sentPhotos[1][1]).metadata();
   assert.equal(outputMetadata.width, 100);
   assert.equal(outputMetadata.height, 80);

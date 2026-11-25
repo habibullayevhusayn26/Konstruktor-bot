@@ -271,6 +271,10 @@ function templateMenu(template) {
           text: `📍 Joylashuvi: ${POSITIONS[template.position] || POSITIONS.topRight}`,
           callback_data: `wm:template-position:${template.id}`,
         }],
+        [{
+          text: "✏️ Shablon nomini o'zgartirish",
+          callback_data: `wm:template-name:${template.id}`,
+        }],
         [{ text: "⬅️ Shablonlarga qaytish", callback_data: "wm:templates" }],
       ],
     },
@@ -395,14 +399,12 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
       }
 
       if (ctx.text === "wm:new-template") {
-        const name = nextTemplateName(templates);
         const id = randomUUID().replace(/-/g, "");
         await saveProfile(userId, {
-          awaiting: "template-logo",
+          awaiting: "template-name",
           pendingTemplateId: id,
-          pendingTemplateName: name,
         });
-        await ctx.edit(`🖼 ${name} uchun logo rasmini yuboring. Bekor qilish: /cancel`);
+        await ctx.edit("Yangi shablon nomini yuboring (1–40 belgi). Bekor qilish: /cancel");
         return;
       }
 
@@ -415,6 +417,21 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
         }
         await saveProfile(userId, { templates }, { logo: "" });
         await ctx.edit(`⚙️ ${template.name} sozlamalari:`, templateMenu(template));
+        return;
+      }
+
+      const renameMatch = ctx.text.match(/^wm:template-name:([\w-]+)$/);
+      if (renameMatch) {
+        const template = templateById(templates, renameMatch[1]);
+        if (!template) {
+          await ctx.edit("Shablon topilmadi.", templatesMenu(templates));
+          return;
+        }
+        await saveProfile(userId, {
+          awaiting: "template-rename",
+          pendingTemplateId: template.id,
+        });
+        await ctx.edit(`“${template.name}” shabloni uchun yangi nom yuboring (1–40 belgi).`);
         return;
       }
 
@@ -542,6 +559,54 @@ function registerWatermarkBot(bot, { doc, WatermarkProfiles }) {
     const userId = ctx.from?.id;
     if (!userId) return;
     const profile = await getProfile(userId);
+    if (
+      profile?.awaiting === "template-name" ||
+      profile?.awaiting === "template-rename"
+    ) {
+      const name = ctx.message.text?.trim();
+      if (!name || name.length > 40) {
+        await ctx.reply("Shablon nomi 1–40 belgidan iborat bo'lsin. Qayta yuboring.");
+        return;
+      }
+      const templates = getTemplates(profile);
+      const duplicate = templates.find((template) =>
+        template.id !== profile.pendingTemplateId &&
+        template.name.toLowerCase() === name.toLowerCase());
+      if (duplicate) {
+        await ctx.reply("Bu nomdagi shablon bor. Boshqa nom tanlang.");
+        return;
+      }
+
+      if (profile.awaiting === "template-name") {
+        await saveProfile(userId, {
+          awaiting: "template-logo",
+          pendingTemplateName: name,
+        });
+        await ctx.reply(`🖼 “${name}” shabloni uchun logo rasmini yuboring.`);
+        return;
+      }
+
+      const template = templateById(templates, profile.pendingTemplateId);
+      if (!template) {
+        await saveProfile(userId, { awaiting: null }, {
+          pendingTemplateId: "",
+        });
+        await ctx.reply("Nomini o'zgartirmoqchi bo'lgan shablon topilmadi.");
+        return;
+      }
+      const updatedTemplates = updateTemplate(templates, template.id, { name });
+      const updatedTemplate = templateById(updatedTemplates, template.id);
+      await saveProfile(userId, {
+        templates: updatedTemplates,
+        awaiting: null,
+      }, { pendingTemplateId: "", logo: "" });
+      await ctx.reply(
+        `✅ Shablon nomi “${name}” qilib o'zgartirildi.`,
+        templateMenu(updatedTemplate),
+      );
+      return;
+    }
+
     const menuText = (ctx.message.text || "")
       .trim()
       .replace(/^[^\p{L}\p{N}]+/u, "")
