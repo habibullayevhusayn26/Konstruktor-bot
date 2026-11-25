@@ -1418,14 +1418,18 @@ test("music bot searches licensed Jamendo tracks and reuses Telegram file IDs", 
   const user = { id: 72 };
   const chat = { id: 72, type: "private" };
   await bot.processUpdate({
+    message: { chat, from: user, text: "/start" },
+  });
+  assert.doesNotMatch(replies[0].text, /Jamendo/i);
+  await bot.processUpdate({
     message: { chat, from: user, text: "Open Song" },
   });
   assert.equal(fetchRequests.length, 1);
   assert.equal(fetchRequests[0].searchParams.get("namesearch"), "Open Song");
   assert.equal(fetchRequests[0].searchParams.get("audioformat"), "mp31");
-  assert.match(replies[0].text, /Open Song — Open Artist/);
-  assert.doesNotMatch(replies[0].text, /Noncommercial Song|External Audio/);
-  const playButton = replies[0].options.reply_markup.inline_keyboard[0][0];
+  assert.match(replies[1].text, /Open Song — Open Artist/);
+  assert.doesNotMatch(replies[1].text, /Noncommercial Song|External Audio|Jamendo/i);
+  const playButton = replies[1].options.reply_markup.inline_keyboard[0][0];
   assert.equal(playButton.callback_data, "music:play:0");
 
   const play = async () => bot.processUpdate({

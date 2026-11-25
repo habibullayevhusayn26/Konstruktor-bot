@@ -197,8 +197,8 @@ function registerMusicSearchBot(bot, {
 }) {
   bot.command("start", async (ctx) => {
     await ctx.reply(
-      "🎵 Musiqa nomi yoki ijrochi nomini yozing.\n" +
-        "Ochiq litsenziyali Jamendo natijalaridan birini tanlang — MP3 audio yuboraman.",
+      "🎵 Musiqa nomi yoki ijrochi nomini yuboring.\n" +
+        "Natijalardan birini tanlang — MP3 qilib yuboraman.",
     );
   });
 
@@ -264,7 +264,7 @@ function registerMusicSearchBot(bot, {
         `${index + 1}. ${track.name} — ${track.artist}\n` +
         `⏱ ${formatDuration(track.duration)} · ${licenseLabel(track.license)}`
       ).join("\n\n");
-      await ctx.reply(`🎵 Jamendo natijalari:\n\n${description}\n\nMP3 yuborish uchun tanlang:`, {
+      await ctx.reply(`🎵 Natijalar:\n\n${description}\n\nMP3 yuborish uchun trekni tanlang:`, {
         reply_markup: {
           inline_keyboard: tracks.map((track, index) => [{
             text: `▶ ${clipText(`${track.name} — ${track.artist}`, 60)}`,
