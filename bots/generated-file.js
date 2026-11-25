@@ -27,6 +27,11 @@ const BOT_TYPES = Object.freeze({
     description: "Logotip shakli va joyini tanlab, rasmlarga watermark qo'ying.",
     module: "watermark",
   },
+  music: {
+    label: "Musiqa qidiruv bot",
+    description: "Jamendo'dan ochiq litsenziyali musiqalarni qidiring va MP3 qilib oling.",
+    module: "music-search",
+  },
   "file-editor": {
     label: "Fayl nomi va muqova tahrirlovchi",
     description: "Fayl nomi, muqovasi va MP3 musiqa ma'lumotlarini tahrirlang.",

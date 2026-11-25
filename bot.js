@@ -213,6 +213,8 @@ async function createBot(ownerId, botType, token) {
             ? "Kanal postlariga o'z matningizni avtomatik qo'shing."
             : botType === "watermark"
               ? "Logo, rasm o'lchami va watermark joyini tanlab, rasmingizga belgi qo'shing."
+              : botType === "music"
+                ? "Musiqa yoki ijrochi nomini yozing — Jamendo'dan mos treklarni qidiraman."
               : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
     requiredChannel: null,
     banned: false,
@@ -443,6 +445,8 @@ const botPanel = (b) => [
       ? "Tag matni va kanalni sozlash uchun bot ichida /start bosing.\nAdmin panel: /admin."
       : b.type === "watermark"
         ? "Logo, rasm o'lchami va watermark joyini tanlash uchun bot ichida /start bosing.\nAdmin panel: /admin."
+        : b.type === "music"
+          ? "Musiqa nomi yoki ijrochini yozing, natijadan tanlang — Jamendo litsenziyali MP3 yuboriladi."
         : b.type === "file-editor"
           ? "Fayl yuborib nomi yoki rasmini o'zgartiring. MP3 uchun ijrochi va musiqa nomi ham tahrirlanadi."
           : b.type === "image-text"
@@ -2043,6 +2047,8 @@ async function main() {
                 ? "✅ Kanal footer boti yaratildi. 3 kunlik bepul sinov boshlandi. Bot ichida /start yuborib tag matni va kanalingizni sozlang."
                 : doc.type === "watermark"
                   ? "✅ Watermark bot yaratildi. 3 kunlik bepul sinov boshlandi. Bot ichida /start yuborib logo va rasm sozlamalarini tanlang."
+                  : doc.type === "music"
+                    ? "✅ Musiqa qidiruv boti yaratildi. Ishlashi uchun Render'da JAMENDO_CLIENT_ID ni sozlang. Foydalanish: /start."
                   : doc.type === "file-editor"
                     ? "✅ Fayl tahrirlovchi bot yaratildi. 3 kunlik bepul sinov boshlandi. /start yuborib faylni tahrirlashni boshlang."
                     : doc.type === "image-text"
