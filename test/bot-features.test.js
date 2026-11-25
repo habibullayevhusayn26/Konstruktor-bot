@@ -1410,7 +1410,7 @@ test("music bot searches licensed Jamendo tracks and reuses Telegram file IDs", 
   };
   bot.sendMessage = async (_chatId, text, options) => replies.push({ text, options });
   registerMusicSearchBot(bot, {
-    doc: { _id: 456001 },
+    doc: { _id: 456001, username: "test_music_bot" },
     clientId: "jamendo-client-id",
     fetchImpl,
   });
@@ -1443,8 +1443,9 @@ test("music bot searches licensed Jamendo tracks and reuses Telegram file IDs", 
   assert.equal(audioRequests[0].audio, licensedUrl);
   assert.equal(audioRequests[0].title, "Open Song");
   assert.equal(audioRequests[0].performer, "Open Artist");
-  assert.match(audioRequests[0].caption, /creativecommons\.org\/licenses\/by\/4\.0/);
+  assert.equal(audioRequests[0].caption, "👉 @test_music_bot");
   assert.equal(audioRequests[1].audio, "telegram-cached-file-id");
+  assert.equal(audioRequests[1].caption, "👉 @test_music_bot");
 });
 
 test("image text editor replaces only the sample title", async () => {

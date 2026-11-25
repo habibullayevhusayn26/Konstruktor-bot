@@ -147,19 +147,15 @@ async function searchJamendo(query, clientId, fetchImpl) {
   return tracks;
 }
 
-function audioMetadata(track) {
-  const links = [
-    track.shareUrl ? `Jamendo: ${track.shareUrl}` : "",
-    `Litsenziya: ${track.license}`,
-  ].filter(Boolean);
+function audioMetadata(track, botUsername) {
   return {
     title: clipText(track.name, 64),
     performer: clipText(track.artist, 64),
-    caption: links.join("\n"),
+    caption: `👉 @${botUsername}`,
   };
 }
 
-async function getAudioFileId(bot, botId, track, chatId) {
+async function getAudioFileId(bot, botId, track, chatId, botUsername) {
   const cacheKey = `${botId}:${track.id}`;
   const cachedFileId = audioFileIds.get(cacheKey);
   if (cachedFileId) {
@@ -176,7 +172,7 @@ async function getAudioFileId(bot, botId, track, chatId) {
   const request = bot.api("sendAudio", {
     chat_id: chatId,
     audio: track.audio,
-    ...audioMetadata(track),
+    ...audioMetadata(track, botUsername),
   }).then((message) => {
     const fileId = message.audio?.file_id;
     if (!fileId) {
@@ -224,12 +220,13 @@ function registerMusicSearchBot(bot, {
         doc._id,
         track,
         ctx.chat.id,
+        doc.username,
       );
       if (!alreadySent) {
         await bot.api("sendAudio", {
           chat_id: ctx.chat.id,
           audio: fileId,
-          ...audioMetadata(track),
+          ...audioMetadata(track, doc.username),
         });
       }
     } catch (error) {
