@@ -1689,6 +1689,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       const key = `${botId}:${userId}`;
       const profile = profiles.get(key) || {};
       Object.assign(profile, update.$setOnInsert, update.$set);
+      for (const field of Object.keys(update.$unset || {})) delete profile[field];
       profiles.set(key, profile);
     },
   };
@@ -1730,7 +1731,7 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       },
     },
   });
-  assert.ok(Buffer.isBuffer(profiles.get("456:22").logo));
+  assert.ok(Buffer.isBuffer(profiles.get("456:22").templates[0].logo));
   assert.equal(profiles.get("456:22").awaiting, null);
   assert.ok(
     replies.at(-1).options.reply_markup.inline_keyboard
@@ -1747,6 +1748,51 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
   assert.equal(profiles.get("456:22").position, "bottomCenter");
   assert.equal(profiles.get("456:22").logoScale, "small");
 
+  await callback("wm:new-template");
+  await bot.processUpdate({
+    message: { chat, from: user, text: "Brend" },
+  });
+  await bot.processUpdate({
+    message: {
+      chat,
+      from: user,
+      document: {
+        file_id: "logo",
+        mime_type: "image/png",
+        file_name: "second-logo.png",
+      },
+    },
+  });
+  const secondTemplate = profiles.get("456:22").templates.find(
+    (template) => template.name === "Brend",
+  );
+  assert.ok(secondTemplate);
+  assert.equal(profiles.get("456:22").activeTemplateId, secondTemplate.id);
+  await callback("wm:set-size:landscape");
+
+  await bot.processUpdate({
+    message: {
+      chat,
+      from: user,
+      document: {
+        file_id: "photo",
+        mime_type: "image/png",
+        file_name: "image.png",
+      },
+    },
+  });
+  assert.match(replies.at(-1).text, /qaysi watermark shablonini/i);
+  const useTemplateButton = replies.at(-1).options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.callback_data === `wm:use-template:${secondTemplate.id}`);
+  assert.ok(useTemplateButton);
+  await callback(useTemplateButton.callback_data);
+  assert.equal(sentPhotos.length, 1);
+  const selectedTemplateMetadata = await sharp(sentPhotos[0][1]).metadata();
+  assert.equal(selectedTemplateMetadata.width, 1280);
+  assert.equal(selectedTemplateMetadata.height, 720);
+
+  await callback("wm:select-template:default");
   await callback("wm:apply");
   await bot.processUpdate({
     message: {
@@ -1759,8 +1805,8 @@ test("watermark bot accepts PNG documents and processes uploaded files", async (
       },
     },
   });
-  assert.equal(sentPhotos.length, 1);
-  const outputMetadata = await sharp(sentPhotos[0][1]).metadata();
+  assert.equal(sentPhotos.length, 2);
+  const outputMetadata = await sharp(sentPhotos[1][1]).metadata();
   assert.equal(outputMetadata.width, 1080);
   assert.equal(outputMetadata.height, 1080);
   assert.equal(profiles.get("456:22").awaiting, null);
