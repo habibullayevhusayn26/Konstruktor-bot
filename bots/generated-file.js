@@ -42,6 +42,11 @@ const BOT_TYPES = Object.freeze({
     description: "Guruhlarni captcha, spam filtri, flood nazorati, warn tizimi va shaxsiy admin panel orqali boshqaring.",
     runtime: "webhook",
   },
+  "user-scheduler": {
+    label: "User Bot — rejalashtirilgan postlar",
+    description: "Telegram akkauntingizni QR orqali ulang va admin/egasi bo'lgan guruh-kanallaringizga postlarni jadval bilan yuboring.",
+    module: "user-scheduler",
+  },
 });
 
 const generatedDirectory = path.join(__dirname, "generated");

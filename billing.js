@@ -9,6 +9,7 @@ const BOT_TYPES = [
   "file-editor",
   "image-text",
   "guard",
+  "user-scheduler",
 ];
 
 const DEFAULT_BILLING_SETTINGS = Object.freeze({

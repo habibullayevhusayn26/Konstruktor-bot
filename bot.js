@@ -170,6 +170,7 @@ async function buildChild(doc) {
     decryptSecret: decrypt,
     publicApiBaseUrl: PUBLIC_API_URL,
   });
+  child.templateControls = templateControls;
   if (typeof templateControls?.handleApiRequest === "function") {
     child.handleSmmApiRequest = templateControls.handleApiRequest;
   }
@@ -208,7 +209,17 @@ async function startChild(doc) {
     return;
   }
 
-  await child.deleteWebhook();
+  try {
+    await child.deleteWebhook();
+    await child.templateControls?.start?.();
+  } catch (error) {
+    try {
+      await child.templateControls?.stop?.();
+    } catch (stopError) {
+      console.error(`@${doc.username} runtime to'xtamadi:`, stopError.message);
+    }
+    throw error;
+  }
   children.set(doc._id, child);
   child.polling = child.launch();
   childPolls.add(child.polling);
@@ -243,9 +254,20 @@ function stopChild(id) {
         console.error(`@${c.config.username} webhook'ini o'chirib bo'lmadi:`, error.message);
       });
     }
+    let templateStop;
+    try {
+      templateStop = Promise.resolve(c.templateControls?.stop?.());
+    } catch (error) {
+      templateStop = Promise.reject(error);
+    }
+    templateStop.catch((error) => {
+      console.error(`@${c.config.username} runtime resurslarini yopib bo'lmadi:`, error.message);
+    });
     c.stop();
     children.delete(id);
+    return templateStop;
   }
+  return Promise.resolve();
 }
 
 async function createBot(ownerId, botType, token) {
@@ -290,7 +312,9 @@ async function createBot(ownerId, botType, token) {
               ? "Logo, rasm o'lchami va watermark joyini tanlab, rasmingizga belgi qo'shing."
               : botType === "guard"
                 ? "Guruhni captcha va spamdan himoyalash uchun Telegram Qorovul Bot."
-                : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
+                : botType === "user-scheduler"
+                  ? "Telegram akkauntingizni ulang va o'zingiz boshqaradigan guruh-kanallarga postlarni jadval bilan yuboring."
+                  : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
     requiredChannel: null,
     banned: false,
     billingStatus: "trial",
@@ -1383,6 +1407,24 @@ async function main() {
   cb(/^delok:(\d+)$/, async (ctx, m) => {
     const b = await getOwned(ctx, m[1]);
     if (!b) return;
+    let userSessionWarning = "";
+    const activeChild = children.get(b._id);
+    if (b.type === "user-scheduler" && b.userSessionEncrypted) {
+      if (typeof activeChild?.templateControls?.delete === "function") {
+        try {
+          await activeChild.templateControls.delete();
+        } catch (error) {
+          userSessionWarning =
+            "\n\nDiqqat: Telegram sessiyasini avtomatik bekor qilib bo'lmadi. " +
+            "Telegram → Sozlamalar → Qurilmalar bo'limida qo'lda bekor qiling.";
+          console.error(`@${b.username} User Bot sessiyasi bekor qilinmadi:`, error.message);
+        }
+      } else {
+        userSessionWarning =
+          "\n\nDiqqat: Telegram sessiyasini avtomatik bekor qilib bo'lmadi. " +
+          "Telegram → Sozlamalar → Qurilmalar bo'limida qo'lda bekor qiling.";
+      }
+    }
     stopChild(b._id);
     await Bots.deleteOne({ _id: b._id });
     await Subs.deleteMany({ botId: b._id });
@@ -1392,7 +1434,7 @@ async function main() {
     await removeGeneratedBotFile(b._id).catch((error) => {
       console.error(`@${b.username} bot faylini o'chirib bo'lmadi:`, error.message);
     });
-    await show(ctx, "🗑 Bot o'chirildi.", kb([back("menu", "🏠 Menyu")]));
+    await show(ctx, `🗑 Bot o'chirildi.${userSessionWarning}`, kb([back("menu", "🏠 Menyu")]));
   });
 
   /* --- Admin panel --- */
@@ -2148,6 +2190,8 @@ async function main() {
                       ? "✅ Rasm sarlavhasi tahrirlovchi bot yaratildi. 3 kunlik bepul sinov boshlandi. /start yuborib sarlavhani o'zgartiring."
                       : doc.type === "guard"
                         ? "✅ Telegram Qorovul Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botni guruhga qo'shib administrator qiling va guruh egasi /claim buyrug'ini yuborsin."
+                        : doc.type === "user-scheduler"
+                          ? "✅ User Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botda /start yuborib Telegram akkauntingizni QR orqali ulang."
                         : "✅ Tayyor bot yaratildi. 3 kunlik bepul sinov boshlandi. Sozlash shart emas.",
             );
             await ctx.reply(
@@ -2335,9 +2379,10 @@ async function main() {
     const activeChildren = [...children.values()];
     const pollingTasks = [motherPolling, ...childPolls];
     mother.stop();
-    for (const child of activeChildren) child.stop();
-    children.clear();
-    await Promise.allSettled(pollingTasks);
+    const childStops = activeChildren.map((child) =>
+      stopChild(child.config._id),
+    );
+    await Promise.allSettled([...pollingTasks, ...childStops]);
     await new Promise((resolve, reject) => {
       healthServer.close((error) => (error ? reject(error) : resolve()));
     });
