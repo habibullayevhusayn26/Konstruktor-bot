@@ -40,14 +40,12 @@ function parseInterval(value) {
   return seconds;
 }
 
-function canPostToDialog(dialog) {
+function getDialogKind(dialog) {
   const entity = dialog?.entity;
-  if (!entity || entity.left || (!dialog.isGroup && !dialog.isChannel)) return false;
-  if (entity.creator) return true;
-  if (!entity.adminRights) return false;
-  return entity.className !== "Channel" ||
-    !entity.broadcast ||
-    entity.adminRights.postMessages === true;
+  if (!entity || entity.left) return null;
+  if (dialog.isChannel && entity.broadcast) return "channels";
+  if (dialog.isGroup || dialog.isChannel) return "groups";
+  return null;
 }
 
 function formatInterval(seconds) {
@@ -248,7 +246,7 @@ function registerUserScheduler(bot, options) {
       `Keyingi yuborish: ${nextRun}\n\n` +
       (schedule.message ? `Xabar: ${schedule.message.slice(0, 250)}` : "Xabar matni hali sozlanmagan.") +
       (extraText ? `\n\n${extraText}` : "") +
-      `\n\nFaqat siz admin yoki egasi bo'lgan guruh/kanallar ko'rsatiladi. ` +
+      `\n\nAkkauntingiz a'zo bo'lgan guruh va kanallar ko'rsatiladi. ` +
       `Eng qisqa interval: 00:00:10.`;
     const markup = panelKeyboard();
     if (edit && typeof ctx.edit === "function") {
@@ -258,35 +256,76 @@ function registerUserScheduler(bot, options) {
     }
   }
 
-  async function managedTargets(client = userClient) {
+  async function availableTargets(kind, client = userClient) {
     if (!client) return [];
     const dialogs = await client.getDialogs({ limit: DIALOG_LIMIT });
     const targets = [];
     for (const dialog of dialogs) {
-      if (!canPostToDialog(dialog)) continue;
+      const dialogKind = getDialogKind(dialog);
+      if (!dialogKind || (kind && dialogKind !== kind)) continue;
       const peerId = await client.getPeerId(dialog.entity, true);
       targets.push({
         peerId: String(peerId),
         title: dialog.title || dialog.entity.title || "Nomsiz chat",
+        kind: dialogKind,
         dialog,
       });
     }
     return targets;
   }
 
-  async function renderTargets(ctx, page = 0, edit = true) {
+  async function renderTargetCategories(ctx, edit = true) {
     if (!userClient) {
       await ctx.reply("Avval shaxsiy Telegram akkauntingizni ulang.", {
         reply_markup: panelKeyboard(),
       });
       return;
     }
-    const targets = await managedTargets();
+    const targets = await availableTargets();
+    const groups = targets.filter((target) => target.kind === "groups").length;
+    const channels = targets.filter((target) => target.kind === "channels").length;
+    const selected = new Set(getSchedule().chatIds);
+    const keyboard = [
+      [{ text: `👥 Guruhlar (${groups})`, callback_data: "userbot:chat-list:groups:0", style: "primary" }],
+      [{ text: `📢 Kanallar (${channels})`, callback_data: "userbot:chat-list:channels:0", style: "primary" }],
+      [{ text: "Boshqaruv paneli", callback_data: "userbot:panel", style: "primary" }],
+    ];
+    const text =
+      `CHAT TURINI TANLANG\n\n` +
+      `Tanlangan chatlar: ${selected.size}\n` +
+      `Admin bo'lish shart emas. Telegram yozishga ruxsat bermagan chatlarga yuborish muvaffaqiyatsiz bo'ladi.`;
+    if (edit && typeof ctx.edit === "function") {
+      await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
+    } else {
+      await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
+    }
+  }
+
+  async function renderTargets(ctx, kind, page = 0, edit = true) {
+    if (!userClient) {
+      await ctx.reply("Avval shaxsiy Telegram akkauntingizni ulang.", {
+        reply_markup: panelKeyboard(),
+      });
+      return;
+    }
+    if (!["groups", "channels"].includes(kind)) {
+      await renderTargetCategories(ctx, edit);
+      return;
+    }
+    const targets = await availableTargets(kind);
     if (!targets.length) {
-      await ctx.reply(
-        "Siz admin yoki egasi bo'lgan guruh/kanal topilmadi. Ruxsatlarni tekshirib, qayta urinib ko'ring.",
-        { reply_markup: panelKeyboard() },
-      );
+      const label = kind === "groups" ? "guruh" : "kanal";
+      const text = `Telegram akkauntingizda tanlash uchun ${label} topilmadi.`;
+      const keyboard = [[{
+        text: "⬅️ Guruhlar va kanallar",
+        callback_data: "userbot:chats",
+        style: "primary",
+      }]];
+      if (edit && typeof ctx.edit === "function") {
+        await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
+      } else {
+        await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
+      }
       return;
     }
     const pages = Math.ceil(targets.length / TARGETS_PER_PAGE);
@@ -296,25 +335,28 @@ function registerUserScheduler(bot, options) {
       .slice(currentPage * TARGETS_PER_PAGE, (currentPage + 1) * TARGETS_PER_PAGE)
       .map((target) => [{
         text: `${selected.has(target.peerId) ? "✓ " : ""}${target.title}`.slice(0, 64),
-        callback_data: `userbot:toggle:${currentPage}:${target.peerId}`,
+        callback_data: `userbot:toggle:${kind}:${currentPage}:${target.peerId}`,
         style: selected.has(target.peerId) ? "success" : "primary",
       }]);
     if (pages > 1) {
       keyboard.push([
         ...(currentPage > 0
-          ? [{ text: "⬅️ Oldingi", callback_data: `userbot:chats:${currentPage - 1}` }]
+          ? [{ text: "⬅️ Oldingi", callback_data: `userbot:chat-list:${kind}:${currentPage - 1}` }]
           : []),
         ...(currentPage + 1 < pages
-          ? [{ text: "Keyingi ➡️", callback_data: `userbot:chats:${currentPage + 1}` }]
+          ? [{ text: "Keyingi ➡️", callback_data: `userbot:chat-list:${kind}:${currentPage + 1}` }]
           : []),
       ]);
     }
-    keyboard.push([{ text: "Boshqaruv paneli", callback_data: "userbot:panel", style: "primary" }]);
+    keyboard.push([{
+      text: "⬅️ Guruhlar va kanallar",
+      callback_data: "userbot:chats",
+      style: "primary",
+    }]);
     const text =
-      `YUBORISH MANZILLARI\n\n` +
-      `Faqat egasi yoki admini bo'lgan chatlar ko'rsatiladi.\n` +
+      `${kind === "groups" ? "GURUHLAR" : "KANALLAR"}\n\n` +
       `Tanlangan: ${selected.size} · Sahifa ${currentPage + 1}/${pages}\n\n` +
-      "Yuborish uchun chat tugmasini bosing:";
+      "Chatni tanlash yoki tanlovdan chiqarish uchun bosing:";
     if (edit && typeof ctx.edit === "function") {
       await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
     } else {
@@ -369,7 +411,7 @@ function registerUserScheduler(bot, options) {
         nextRunAt: new Date(Date.now() + intervalSeconds * 1_000),
       });
 
-      const allowed = await managedTargets();
+      const allowed = await availableTargets();
       const byId = new Map(allowed.map((target) => [target.peerId, target]));
       const selectedIds = getSchedule().chatIds;
       const targets = selectedIds.map((id) => byId.get(id)).filter(Boolean);
@@ -382,14 +424,14 @@ function registerUserScheduler(bot, options) {
         });
         await notifyOwner(
           targets.length
-            ? "Admin huquqi yo'qolgan chatlar jadvaldan olib tashlandi."
-            : "Tanlangan chatlarda admin huquqi qolmadi. Jadval to'xtatildi.",
+            ? "Akkauntingizda mavjud bo'lmagan chatlar jadvaldan olib tashlandi."
+            : "Tanlangan chatlar akkauntingizda mavjud emas. Jadval to'xtatildi.",
         );
       }
       if (!targets.length) {
         await saveSchedule({ enabled: false, nextRunAt: null });
         stopScheduler();
-        await notifyOwner("Jadvalda yuborish uchun ruxsati bor chat qolmadi; jadval to'xtatildi.");
+        await notifyOwner("Yuborish uchun mavjud chat qolmadi; jadval to'xtatildi.");
         return;
       }
 
@@ -921,13 +963,17 @@ function registerUserScheduler(bot, options) {
         inputModes.delete(ownerId);
         await showPanel(ctx, false, "Kiritish bekor qilindi.");
       } else if (action === "chats") {
-        await renderTargets(ctx, Number(args[0]) || 0);
+        await renderTargetCategories(ctx);
+      } else if (action === "chat-list") {
+        await renderTargets(ctx, args[0], Number(args[1]) || 0);
       } else if (action === "toggle") {
-        const page = Number(args[0]) || 0;
-        const peerId = args[1];
-        const targets = await managedTargets();
-        if (!targets.some((target) => target.peerId === peerId)) {
-          await ctx.reply("Bu chat endi admin huquqi bor manzillar ro'yxatida yo'q.");
+        const kind = args[0];
+        const page = Number(args[1]) || 0;
+        const peerId = args[2];
+        const targets = await availableTargets(kind);
+        const target = targets.find((item) => item.peerId === peerId);
+        if (!target) {
+          await ctx.reply("Bu chat endi Telegram akkauntingizdagi chatlar ro'yxatida yo'q.");
           return;
         }
         const selected = new Set(schedule.chatIds);
@@ -939,7 +985,7 @@ function registerUserScheduler(bot, options) {
           nextRunAt: null,
         });
         stopScheduler();
-        await renderTargets(ctx, page);
+        await renderTargets(ctx, kind, page);
       } else if (action === "message" || action === "interval") {
         inputModes.set(ownerId, { type: action });
         await ctx.reply(
@@ -1033,11 +1079,11 @@ function registerUserScheduler(bot, options) {
     ) {
       return { error: "Interval noto'g'ri. Eng qisqa interval — 10 soniya." };
     }
-    if (!schedule.chatIds.length) return { error: "Kamida bitta boshqariladigan chatni tanlang." };
-    const allowed = await managedTargets();
+    if (!schedule.chatIds.length) return { error: "Kamida bitta guruh yoki kanalni tanlang." };
+    const allowed = await availableTargets();
     const targets = schedule.chatIds.map((id) => allowed.find((target) => target.peerId === id)).filter(Boolean);
     if (targets.length !== schedule.chatIds.length) {
-      return { error: "Tanlangan chatlardan ayrimlarida admin huquqi yo'q. Chatlar ro'yxatini yangilang." };
+      return { error: "Tanlangan chatlardan ayrimlari akkauntingizda topilmadi. Chatlar ro'yxatini yangilang." };
     }
     return { targets };
   }
@@ -1079,8 +1125,8 @@ module.exports = Object.assign(registerUserScheduler, {
   MAX_INTERVAL_SECONDS,
   MIN_INTERVAL_SECONDS,
   buildMiniAppUrl,
-  canPostToDialog,
   formatInterval,
+  getDialogKind,
   parseInterval,
   registerUserScheduler,
   validateWebAppInitData,

@@ -6,9 +6,9 @@ const test = require("node:test");
 const { BotConstructor } = require("../bot-constructor");
 const { BOT_TYPES } = require("../bots/generated-file");
 const {
-  canPostToDialog,
   buildMiniAppUrl,
   formatInterval,
+  getDialogKind,
   parseInterval,
   registerUserScheduler,
   validateWebAppInitData,
@@ -100,41 +100,38 @@ test("Mini App API only returns login status to the signed bot owner", async () 
   await runtime.stop();
 });
 
-test("only groups and channels with posting admin rights qualify as targets", () => {
+test("groups and channels are selectable without admin rights, but not after leaving", () => {
   assert.equal(
-    canPostToDialog({
-      isGroup: true,
-      entity: { className: "Chat", adminRights: { deleteMessages: true } },
-    }),
-    true,
-  );
-  assert.equal(
-    canPostToDialog({
-      isChannel: true,
-      entity: { className: "Channel", broadcast: true, adminRights: { postMessages: true } },
-    }),
-    true,
-  );
-  assert.equal(
-    canPostToDialog({
-      isChannel: true,
-      entity: { className: "Channel", broadcast: true, adminRights: { postMessages: false } },
-    }),
-    false,
-  );
-  assert.equal(
-    canPostToDialog({
-      isGroup: true,
-      entity: { className: "Chat", left: true, creator: true },
-    }),
-    false,
-  );
-  assert.equal(
-    canPostToDialog({
+    getDialogKind({
       isGroup: true,
       entity: { className: "Chat" },
     }),
-    false,
+    "groups",
+  );
+  assert.equal(
+    getDialogKind({
+      isChannel: true,
+      entity: { className: "Channel", broadcast: true },
+    }),
+    "channels",
+  );
+  assert.equal(
+    getDialogKind({
+      isChannel: true,
+      entity: { className: "Channel", broadcast: false, megagroup: true },
+    }),
+    "groups",
+  );
+  assert.equal(
+    getDialogKind({
+      isGroup: true,
+      entity: { className: "Chat", left: true },
+    }),
+    null,
+  );
+  assert.equal(
+    getDialogKind({ entity: { className: "User" } }),
+    null,
   );
 });
 

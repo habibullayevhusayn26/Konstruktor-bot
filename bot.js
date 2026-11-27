@@ -326,7 +326,7 @@ async function createBot(ownerId, botType, token) {
               : botType === "guard"
                 ? "Guruhni captcha va spamdan himoyalash uchun Telegram Qorovul Bot."
                 : botType === "user-scheduler"
-                  ? "Telegram akkauntingizni ulang va o'zingiz boshqaradigan guruh-kanallarga postlarni jadval bilan yuboring."
+                  ? "Telegram akkauntingizni ulang va a'zo bo'lgan guruh/kanallarga postlarni jadval bilan yuboring."
                   : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
     requiredChannel: null,
     banned: false,

@@ -22,7 +22,10 @@ Serverda `TELEGRAM_API_ID` va `TELEGRAM_API_HASH` ni
 `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_TOKEN`, `MONGODB_URI` va
 `TOKEN_SECRET` environment secrets sifatida kiriting.
 
-Panel faqat akkaunt egasi yoki admini bo'lgan guruh va kanallarni ko'rsatadi.
+Panel guruhlar va kanallarni alohida ro'yxatlaydi, admin bo'lish shart emas.
+Tanlangan chat bot jadvaliga saqlanadi. Telegram akkauntda yozish huquqi
+bo'lmagan guruh yoki kanalga post yuborilmasligi mumkin; bunday natija xatolar
+sonida ko'rsatiladi.
 Xabar, manzillar va intervalni tanlab, oldindan ko'rib, tasdiqlagandan keyin
 birinchi post darhol yuboriladi; keyingilari 10 soniyadan 30 kungacha tanlangan
 intervalda takrorlanadi. **Jadvalni to'xtatish** keyingi yuborishlarni to'xtatadi;
