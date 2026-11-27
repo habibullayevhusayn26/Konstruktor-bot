@@ -651,6 +651,10 @@ test("selected chat can be removed and chat share buttons remain active", async 
       userRecords.get("123456:77").userSchedule.chatIds,
       ["-100777"],
     );
+    assert.equal(
+      userRecords.get("123456:77").userSchedule.chatTitles["-100777"],
+      "Test channel",
+    );
     const latestPickerReply = replies.filter((reply) =>
       reply.options?.reply_markup?.keyboard,
     ).at(-1);

@@ -22,6 +22,7 @@ const EMPTY_SCHEDULE = Object.freeze({
   message: "",
   intervalSeconds: MIN_INTERVAL_SECONDS,
   chatIds: [],
+  chatTitles: {},
   enabled: false,
   nextRunAt: null,
   lastSentAt: null,
@@ -201,6 +202,12 @@ function registerUserSchedulerSession(bot, options) {
           ? legacyMinutes * 60
           : MIN_INTERVAL_SECONDS,
       chatIds: Array.isArray(savedSchedule.chatIds) ? savedSchedule.chatIds : [],
+      chatTitles:
+        savedSchedule.chatTitles &&
+        typeof savedSchedule.chatTitles === "object" &&
+        !Array.isArray(savedSchedule.chatTitles)
+          ? savedSchedule.chatTitles
+          : {},
     };
   };
 
@@ -934,8 +941,16 @@ function registerUserSchedulerSession(bot, options) {
     if (wasSelected) selected.delete(target.peerId);
     else selected.add(target.peerId);
     try {
+      const nextChatTitles = { ...getSchedule().chatTitles };
+      if (!wasSelected) {
+        nextChatTitles[target.peerId] =
+          String(shared.title || target.title || "").trim() || `Chat ${target.peerId}`;
+      } else {
+        delete nextChatTitles[target.peerId];
+      }
       await saveSchedule({
         chatIds: [...selected],
+        chatTitles: nextChatTitles,
         enabled: false,
         nextRunAt: null,
       });
@@ -973,6 +988,7 @@ function registerUserSchedulerSession(bot, options) {
 
   async function showConnectedChatActions(ctx) {
     const selectedIds = getSchedule().chatIds;
+    const chatTitles = getSchedule().chatTitles;
     if (!selectedIds.length) {
       await ctx.reply(
         "Hozir hech qanday chat ulanmagan.",
@@ -998,14 +1014,18 @@ function registerUserSchedulerSession(bot, options) {
       const resolvedById = new Map(targets.map((target) => [target.peerId, target]));
       targets = selectedIds.map((peerId) => resolvedById.get(peerId) || {
         peerId,
-        title: `Chat ${peerId}`,
+        title: chatTitles[peerId] || "Chat nomi mavjud emas",
       });
     }
     const rows = [];
     for (let index = 0; index < targets.length; index++) {
       const target = targets[index];
+      const title =
+        chatTitles[target.peerId] ||
+        target.title ||
+        "Chat nomi mavjud emas";
       rows.push([{
-        text: `Uzni: ${target.title.slice(0, 38)}`,
+        text: `Uzni: ${title.slice(0, 38)}`,
         callback_data: `userbot:chat-remove:${target.peerId}`,
         style: "danger",
       }]);
@@ -1657,8 +1677,11 @@ function registerUserSchedulerSession(bot, options) {
           return;
         }
         const nextChatIds = schedule.chatIds.filter((id) => id !== peerId);
+        const nextChatTitles = { ...schedule.chatTitles };
+        delete nextChatTitles[peerId];
         await saveSchedule({
           chatIds: nextChatIds,
+          chatTitles: nextChatTitles,
           enabled: false,
           nextRunAt: null,
         });
