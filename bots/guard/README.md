@@ -1,9 +1,11 @@
 # Telegram Qorovul Bot
 
 Guard Bot is a grammY bot served through a per-bot Telegram webhook on the
-constructor's existing HTTPS server. Set `PUBLIC_API_URL` to the public HTTPS
-base URL. On Render, set the exact service URL; an optional URL path prefix is
-supported.
+constructor's existing HTTPS server. On Render, it automatically uses the
+service's `RENDER_EXTERNAL_URL`, so no public URL needs to be entered manually.
+For other hosting providers, set `PUBLIC_API_URL` to the public HTTPS base URL.
+An optional URL path prefix is supported. Telegram still needs a reachable
+public HTTPS endpoint; local testing requires a tunnel or equivalent.
 
 ## Setup
 

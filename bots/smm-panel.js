@@ -162,7 +162,7 @@ function registerSmmPanel(bot, options = {}) {
     const user = await Users.findOne({ _id: ctx.from.id, botId });
     const apiUrl = publicApiBaseUrl
       ? `${publicApiBaseUrl}/api/smm/${botId}/v2`
-      : "Serverda PUBLIC_API_URL sozlanmagan.";
+      : "Serverning ommaviy API manzili sozlanmagan.";
     await ctx.reply(
       `🌐 SMM API manzili:\n${apiUrl}\n\n` +
         `API key: ${user?.smmApiKeyHash ? "yaratilgan (xavfsizlik uchun qayta ko‘rsatilmaydi)" : "hali yaratilmagan"}\n` +
@@ -199,7 +199,7 @@ function registerSmmPanel(bot, options = {}) {
     );
     const apiUrl = publicApiBaseUrl
       ? `${publicApiBaseUrl}/api/smm/${botId}/v2`
-      : "Serverda PUBLIC_API_URL sozlanmagan.";
+      : "Serverning ommaviy API manzili sozlanmagan.";
     await ctx.reply(
       `✅ Shaxsiy API key yaratildi.\n\nAPI URL: ${apiUrl}\nAPI key: ${apiKey}\n\n` +
         "Key faqat shu xabarda ko‘rsatiladi. Yo‘qolsa, yangisini yarating; eski key darhol bekor bo‘ladi.",

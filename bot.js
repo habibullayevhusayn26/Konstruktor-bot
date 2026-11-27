@@ -34,9 +34,10 @@ const {
   MONGODB_URI,
   TOKEN_SECRET,
   CRON_SECRET,
-  PUBLIC_API_URL = "",
   PORT = 3000,
 } = process.env;
+const PUBLIC_API_URL =
+  process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || "";
 const ADMIN_IDS = (process.env.ADMIN_IDS || "")
   .split(",")
   .map((s) => Number(s.trim()))
@@ -114,7 +115,9 @@ async function buildChild(doc) {
   if (!BOT_TYPES[doc.type]) throw new Error("Noma'lum tayyor bot turi.");
   if (doc.type === "guard") {
     if (!PUBLIC_API_URL) {
-      throw new Error("Guard Bot webhook'i uchun PUBLIC_API_URL sozlanishi kerak.");
+      throw new Error(
+        "Guard Bot webhook'i uchun ommaviy HTTPS URL topilmadi. Render'da RENDER_EXTERNAL_URL avtomatik beriladi; boshqa hostingda PUBLIC_API_URL kiriting.",
+      );
     }
     const publicUrl = new URL(PUBLIC_API_URL);
     if (publicUrl.protocol !== "https:") {
