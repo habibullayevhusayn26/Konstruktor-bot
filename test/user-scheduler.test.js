@@ -411,6 +411,7 @@ test("user scheduler stores media and forwarding details from the submitted Tele
     messageIds: [23],
     forwarded: true,
     description: "rasm",
+    text: "caption",
   });
   assert.equal(userRecords.get("123456:77").userSchedule.message, "");
   assert.match(replies[1].text, /Xabar jadval uchun saqlandi/);

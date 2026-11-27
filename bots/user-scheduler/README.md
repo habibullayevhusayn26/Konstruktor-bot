@@ -41,6 +41,11 @@ copy/forward amallari orqali uzatiladi. Albom bir nechta xabar ID'si bilan birga
 saqlanadi. Manba xabar o'chirilgan yoki Telegram tomonidan nusxalashga ruxsat
 berilmagan bo'lsa, yuborish xato sifatida egasiga bildiriladi.
 
+Saqlashdan oldin Telegram botdagi manba xabar bilan shaxsiy akkauntdagi MTProto
+xabar ID'si moslashtiriladi. Agar Bot API va MTProto xabar ID'lari farq qilsa,
+matnli xabarlar matn bo'yicha xavfsiz qayta yuborilishi uchun fallback ishlaydi;
+media/fayl uchun xabar qayta yuborilishi talab qilinishi mumkin.
+
 Xabar, manzillar va intervalni tanlab, oldindan ko'rib, tasdiqlagandan keyin
 birinchi post darhol yuboriladi; keyingilari 10 soniyadan 30 kungacha tanlangan
 intervalda takrorlanadi. **Jadvalni to'xtatish** keyingi yuborishlarni to'xtatadi;

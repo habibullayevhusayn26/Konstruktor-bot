@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const { TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
+const { NewMessage } = require("teleproto/events");
 const { BotConstructor } = require("../bot-constructor");
 
 const MIN_INTERVAL_SECONDS = 10;
@@ -160,6 +161,8 @@ function registerUserSchedulerSession(bot, options) {
   let sourceBotPeer = null;
   let chatPickerActive = false;
   let pendingAlbum = null;
+  const mtprotoMessageRefs = new Map();
+  let mtprotoSourceListenerAttached = false;
   let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
@@ -363,6 +366,12 @@ function registerUserSchedulerSession(bot, options) {
       Array.isArray(messageRef?.messageIds) &&
       messageRef.messageIds.length > 0 &&
       messageRef.messageIds.every((id) => Number.isSafeInteger(id) && id > 0) &&
+      (messageRef.mtprotoMessageIds == null ||
+        (
+          Array.isArray(messageRef.mtprotoMessageIds) &&
+          messageRef.mtprotoMessageIds.length === messageRef.messageIds.length &&
+          messageRef.mtprotoMessageIds.every((id) => Number.isSafeInteger(id) && id > 0)
+        )) &&
       typeof messageRef.forwarded === "boolean"
     );
   }
@@ -410,17 +419,109 @@ function registerUserSchedulerSession(bot, options) {
         throw new Error("User Bot suhbatini Telegram akkauntingizdan topib bo'lmadi.");
       }
       sourceBotPeer = await userClient.getEntity(String(doc.username).replace(/^@/, ""));
+      attachMtprotoSourceListener();
     }
     return sourceBotPeer;
+  }
+
+  function attachMtprotoSourceListener() {
+    if (!userClient || mtprotoSourceListenerAttached || typeof userClient.addEventHandler !== "function") return;
+    mtprotoSourceListenerAttached = true;
+    userClient.addEventHandler((event) => {
+      try {
+        const message = event?.message;
+        if (!message?.out || !Number.isSafeInteger(message.id) || message.id < 1) return;
+        if (typeof event.isPrivate === "boolean" && !event.isPrivate) return;
+        const text = typeof message.text === "string"
+          ? message.text
+          : typeof message.message === "string"
+            ? message.message
+            : typeof message.caption === "string"
+              ? message.caption
+              : "";
+        const description = text
+          ? "matn"
+          : message.photo
+            ? "rasm"
+            : message.video
+              ? "video"
+              : message.document
+                ? "fayl"
+                : "xabar";
+        const signature = `${description}:${text.slice(0, 512)}`;
+        const refs = mtprotoMessageRefs.get(signature) || [];
+        refs.push({ id: message.id, timestamp: Date.now() });
+        while (refs.length > 20) refs.shift();
+        mtprotoMessageRefs.set(signature, refs);
+        const mtprotoIdKey = `id:${message.id}`;
+        mtprotoMessageRefs.set(mtprotoIdKey, [{ id: message.id, timestamp: Date.now() }]);
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} MTProto xabarini kuzatib bo'lmadi:`, error.message);
+      }
+    }, new NewMessage({ outgoing: true }));
+  }
+
+  function findMtprotoMessageId(message) {
+    const text = typeof message.text === "string"
+      ? message.text
+      : typeof message.caption === "string"
+        ? message.caption
+        : "";
+    const description = describeTelegramMessage(message);
+    const signature = `${description}:${text.slice(0, 512)}`;
+    const exactRefs = mtprotoMessageRefs.get(signature);
+    if (exactRefs?.length) {
+      const latest = exactRefs[exactRefs.length - 1];
+      if (Date.now() - latest.timestamp <= 10 * 60_000) return latest.id;
+    }
+    const sameTypeRefs = [...mtprotoMessageRefs.entries()]
+      .filter(([key]) => key.startsWith(`${description}:`))
+      .flatMap(([, refs]) => refs)
+      .filter((ref) => Date.now() - ref.timestamp <= 10 * 60_000)
+      .sort((left, right) => right.timestamp - left.timestamp);
+    return sameTypeRefs[0]?.id || null;
   }
 
   async function sendScheduledMessage(target, schedule) {
     if (!isValidMessageRef(schedule.messageRef)) {
       return userClient.sendMessage(target, { message: schedule.message });
     }
+    const sourcePeer = await getSourceBotPeer();
+    const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
+    const messageIds = mtprotoIds
+      ? mtprotoIds
+      : schedule.messageRef.messageIds;
+    if (typeof userClient.getMessages === "function") {
+      const sourceMessages = await userClient.getMessages(sourcePeer, {
+        ids: messageIds,
+      });
+      const validIds = sourceMessages
+        .filter((message) => message && Number.isSafeInteger(message.id))
+        .map((message) => message.id);
+      if (!validIds.length) {
+        if (schedule.messageRef.text) {
+          await userClient.sendMessage(target, { message: schedule.messageRef.text });
+          return;
+        }
+        throw new Error(
+          "Telegram botdagi manba xabari topilmadi. Xabarni qayta yuborib, jadvalni yangilang.",
+        );
+      }
+      for (let index = 0; index < messageIds.length; index++) {
+        if (!validIds.includes(messageIds[index])) {
+          if (schedule.messageRef.text) {
+            await userClient.sendMessage(target, { message: schedule.messageRef.text });
+            return;
+          }
+          throw new Error(
+            "Telegram botdagi manba xabarlardan biri mavjud emas. Xabarni qayta yuboring.",
+          );
+        }
+      }
+    }
     const params = {
-      messages: schedule.messageRef.messageIds,
-      fromPeer: await getSourceBotPeer(),
+      messages: messageIds,
+      fromPeer: sourcePeer,
     };
     const sent = schedule.messageRef.forwarded
       ? await userClient.forwardMessages(target, params)
@@ -612,7 +713,9 @@ function registerUserSchedulerSession(bot, options) {
       });
       if (failed > 0) {
         await notifyOwner(
-          `${failed} ta chatga rejalashtirilgan xabar yuborilmadi. /start orqali holatni tekshiring.`,
+          `${failed} ta chatga rejalashtirilgan xabar yuborilmadi. ` +
+            "Ko'pincha manba xabar hali Telegram bilan sinxronlanmagan yoki manzilga yozish huquqi yetarli emas. " +
+            "Xabarni qayta yuborib, chatlarni qayta tanlang.",
         );
       }
     } catch (error) {
@@ -760,6 +863,7 @@ function registerUserSchedulerSession(bot, options) {
       }
       userClient = attempt.client;
       sourceBotPeer = null;
+      attachMtprotoSourceListener();
       doc.userSessionEncrypted = encryptedSession;
       doc.userAccount = userAccount;
       attempt.phase = "success";
@@ -996,6 +1100,7 @@ function registerUserSchedulerSession(bot, options) {
       }
       userClient = client;
       sourceBotPeer = null;
+      attachMtprotoSourceListener();
       doc.userAccount = { id: String(me.id), username: me.username || "" };
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
@@ -1244,6 +1349,20 @@ function registerUserSchedulerSession(bot, options) {
 
   async function saveMessageReference(ctx, messageRef, notify = true) {
     try {
+      if (typeof userClient?.getSourceBotPeer === "function") {
+        await getSourceBotPeer();
+      } else if (userClient) {
+        await getSourceBotPeer();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const mtprotoMessageIds = [];
+      for (const botMessageId of messageRef.messageIds) {
+        const mtprotoId = findMtprotoMessageId(ctx.message);
+        if (mtprotoId) mtprotoMessageIds.push(mtprotoId);
+      }
+      if (mtprotoMessageIds.length === messageRef.messageIds.length) {
+        messageRef.mtprotoMessageIds = mtprotoMessageIds;
+      }
       await saveSchedule({
         message: "",
         messageRef,
@@ -1276,6 +1395,7 @@ function registerUserSchedulerSession(bot, options) {
       messageIds: album.messageIds,
       forwarded: album.forwarded,
       description: album.description,
+      text: album.ctx.message?.caption || "",
     }, notify);
   }
 
@@ -1352,6 +1472,11 @@ function registerUserSchedulerSession(bot, options) {
       messageIds: [message.message_id],
       forwarded: isForwardedFromAnotherUser(message),
       description: describeTelegramMessage(message),
+      text: typeof message.text === "string"
+        ? message.text
+        : typeof message.caption === "string"
+          ? message.caption
+          : "",
     };
     await saveMessageReference(ctx, messageRef);
     ctx.handled = true;
