@@ -6,11 +6,13 @@ const { GuardDatabase } = require("../bots/guard/database");
 const { BOT_TYPES } = require("../bots/generated-file");
 const { getBillingSettings } = require("../billing");
 const {
+  createGuardBot,
   formatWelcome,
   groupKeyboard,
   hasBlockedWord,
   hasLink,
   isForwardedAdvertisement,
+  isServiceMessage,
   panelKeyboard,
   parseBannedWords,
   validateFloodSettings,
@@ -120,6 +122,79 @@ test("guard detects links and forwarded advertisements and formats welcome text"
     formatWelcome("Salom, {name}! {group}", { first_name: "Ali" }, "Guruh"),
     "Salom, Ali! Guruh",
   );
+});
+
+test("group service messages are deleted while member joins still get a welcome", async () => {
+  const deletedMessages = [];
+  const welcomeMessages = [];
+  const group = {
+    title: "Test group",
+    ownerId: 1,
+    bannedWords: [],
+    captchaEnabled: false,
+    welcomeText: "Welcome, {name}",
+    floodLimit: 5,
+    floodWindowSeconds: 10,
+    muteSeconds: 60,
+  };
+  const database = {
+    getGroup: async () => group,
+    listAdmins: async () => [],
+    recordActivity: async () => {
+      throw new Error("Service messages must not count as activity.");
+    },
+  };
+  const runtime = createGuardBot("123456:TEST_TOKEN", { botId: 1, database });
+  runtime.bot.botInfo = { id: 99, username: "guard_bot" };
+  runtime.bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "deleteMessage") {
+      deletedMessages.push(payload);
+      return { ok: true, result: true };
+    }
+    if (method === "sendMessage") {
+      welcomeMessages.push(payload);
+      return { ok: true, result: { message_id: welcomeMessages.length } };
+    }
+    return previous(method, payload, signal);
+  });
+
+  try {
+    await runtime.bot.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 10,
+        date: 1,
+        chat: { id: -100123, type: "supergroup", title: "Test group" },
+        from: { id: 1, is_bot: false, first_name: "Owner" },
+        new_chat_members: [{ id: 20, is_bot: false, first_name: "Member" }],
+      },
+    });
+    await runtime.bot.handleUpdate({
+      update_id: 2,
+      message: {
+        message_id: 11,
+        date: 2,
+        chat: { id: -100123, type: "supergroup", title: "Test group" },
+        from: { id: 1, is_bot: false, first_name: "Owner" },
+        left_chat_member: { id: 20, is_bot: false, first_name: "Member" },
+      },
+    });
+
+    assert.deepEqual(deletedMessages, [
+      { chat_id: -100123, message_id: 10 },
+      { chat_id: -100123, message_id: 11 },
+    ]);
+    assert.equal(welcomeMessages.length, 1);
+    assert.match(welcomeMessages[0].text, /Welcome, Member/);
+  } finally {
+    runtime.cleanup();
+  }
+});
+
+test("service message detector distinguishes group events from ordinary text", () => {
+  assert.equal(isServiceMessage({ new_chat_members: [] }), true);
+  assert.equal(isServiceMessage({ pinned_message: { message_id: 10 } }), true);
+  assert.equal(isServiceMessage({ text: "ordinary message" }), false);
 });
 
 test("premium emoji placeholders fall back until numeric custom IDs are configured", () => {

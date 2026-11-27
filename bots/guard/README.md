@@ -22,6 +22,9 @@ public HTTPS endpoint; local testing requires a tunnel or equivalent.
 - New members are restricted until they press their personal captcha button;
   they are kicked if the configured timeout expires. Pending captcha deadlines
   are stored and restored after a service restart.
+- Telegram group service notices (joins, leaves, title/photo changes, pins,
+  topics, video chats, and similar events) are deleted in claimed groups.
+  Welcome and captcha messages are sent separately and remain visible.
 - Messages containing links, forwarded advertisements, and configured banned
   words are deleted. Admins are exempt from automatic deletion and flood mute.
 - Flood settings accept `messages/seconds` (3–30 messages / 3–120 seconds).

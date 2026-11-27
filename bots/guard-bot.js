@@ -8,9 +8,65 @@ const LINK_PATTERN = /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/)\S+/i;
 const MAX_WARNINGS = 3;
 const MAX_BANNED_WORDS = 100;
 const MAX_WORD_LENGTH = 64;
+const SERVICE_MESSAGE_FIELDS = [
+  "new_chat_members",
+  "left_chat_member",
+  "new_chat_title",
+  "new_chat_photo",
+  "delete_chat_photo",
+  "group_chat_created",
+  "supergroup_chat_created",
+  "channel_chat_created",
+  "managed_bot_created",
+  "poll_option_added",
+  "poll_option_deleted",
+  "message_auto_delete_timer_changed",
+  "migrate_to_chat_id",
+  "migrate_from_chat_id",
+  "pinned_message",
+  "proximity_alert_triggered",
+  "boost_added",
+  "chat_background_set",
+  "forum_topic_created",
+  "forum_topic_edited",
+  "forum_topic_closed",
+  "forum_topic_reopened",
+  "general_forum_topic_hidden",
+  "general_forum_topic_unhidden",
+  "giveaway_created",
+  "giveaway",
+  "giveaway_winners",
+  "giveaway_completed",
+  "gift",
+  "gift_upgrade_sent",
+  "unique_gift",
+  "paid_message_price_changed",
+  "paid_messages_waived",
+  "direct_message_price_changed",
+  "video_chat_scheduled",
+  "video_chat_started",
+  "video_chat_ended",
+  "video_chat_participants_invited",
+  "checklist_tasks_done",
+  "checklist_tasks_added",
+  "community_chat_joined",
+  "chat_owner_left",
+  "chat_owner_changed",
+  "suggested_post_info",
+  "suggested_post_approved",
+  "suggested_post_approval_failed",
+  "suggested_post_declined",
+  "suggested_post_paid",
+  "suggested_post_refunded",
+  "ton_wallet_transfer",
+];
 
 function messageText(message) {
   return message.text || message.caption || "";
+}
+
+function isServiceMessage(message) {
+  return SERVICE_MESSAGE_FIELDS.some((field) => message[field] !== undefined);
 }
 
 function hasLink(message) {
@@ -289,6 +345,17 @@ function createGuardBot(token, { botId, database }) {
     }
   }
 
+  async function deleteServiceMessage(ctx) {
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      console.error(
+        `Guard bot ${botId} guruh ${ctx.chat.id} xizmat xabarini o'chira olmadi:`,
+        error.message,
+      );
+    }
+  }
+
   function scheduleCaptchaExpiry(chatId, userId, expiresAt) {
     const key = `${chatId}:${userId}`;
     clearTimeout(captchaTimers.get(key));
@@ -560,29 +627,33 @@ function createGuardBot(token, { botId, database }) {
   bot.on("message:new_chat_members", async (ctx) => {
     const group = await getGroup(ctx.chat.id);
     if (!group) return;
-    for (const member of ctx.message.new_chat_members) {
-      if (member.id === bot.botInfo.id || await isRegisteredAdmin(ctx.chat.id, member.id)) continue;
-      const welcome = formatWelcome(group.welcomeText, member, group.title);
-      if (group.captchaEnabled) {
-        const key = `${ctx.chat.id}:${member.id}`;
-        const keyboard = new InlineKeyboard().add(
-          emojiButton("captcha", "Tasdiqlash", `captcha:${ctx.chat.id}:${member.id}`, "success"),
-        );
-        await enforceCaptcha(ctx.chat.id, member.id, group.captchaTimeoutSeconds);
-        const formatted = messageWithEmoji("welcome", `${welcome}\n\nDavom etish uchun captcha tugmasini bosing.`);
-        await bot.api.sendMessage(ctx.chat.id, formatted.text, {
-          reply_markup: keyboard,
-          ...(formatted.entities ? { entities: formatted.entities } : {}),
-        });
-        if (!captchaTimers.has(key)) {
-          throw new Error(`Captcha timer yaratilmadi: ${key}`);
+    try {
+      for (const member of ctx.message.new_chat_members) {
+        if (member.id === bot.botInfo.id || await isRegisteredAdmin(ctx.chat.id, member.id)) continue;
+        const welcome = formatWelcome(group.welcomeText, member, group.title);
+        if (group.captchaEnabled) {
+          const key = `${ctx.chat.id}:${member.id}`;
+          const keyboard = new InlineKeyboard().add(
+            emojiButton("captcha", "Tasdiqlash", `captcha:${ctx.chat.id}:${member.id}`, "success"),
+          );
+          await enforceCaptcha(ctx.chat.id, member.id, group.captchaTimeoutSeconds);
+          const formatted = messageWithEmoji("welcome", `${welcome}\n\nDavom etish uchun captcha tugmasini bosing.`);
+          await bot.api.sendMessage(ctx.chat.id, formatted.text, {
+            reply_markup: keyboard,
+            ...(formatted.entities ? { entities: formatted.entities } : {}),
+          });
+          if (!captchaTimers.has(key)) {
+            throw new Error(`Captcha timer yaratilmadi: ${key}`);
+          }
+        } else {
+          const formatted = messageWithEmoji("welcome", welcome);
+          await bot.api.sendMessage(ctx.chat.id, formatted.text, {
+            ...(formatted.entities ? { entities: formatted.entities } : {}),
+          });
         }
-      } else {
-        const formatted = messageWithEmoji("welcome", welcome);
-        await bot.api.sendMessage(ctx.chat.id, formatted.text, {
-          ...(formatted.entities ? { entities: formatted.entities } : {}),
-        });
       }
+    } finally {
+      await deleteServiceMessage(ctx);
     }
   });
 
@@ -633,9 +704,14 @@ function createGuardBot(token, { botId, database }) {
       return;
     }
 
-    if (ctx.chat.type === "private" || !ctx.from || ctx.from.is_bot) return;
+    if (ctx.chat.type === "private") return;
     const group = await getGroup(ctx.chat.id);
     if (!group) return;
+    if (isServiceMessage(ctx.message)) {
+      await deleteServiceMessage(ctx);
+      return;
+    }
+    if (!ctx.from || ctx.from.is_bot) return;
     await database.recordActivity(botId, ctx.chat.id, ctx.from.id);
 
     const forwardedAd = isForwardedAdvertisement(ctx.message);
@@ -853,6 +929,7 @@ module.exports = {
   hasBlockedWord,
   hasLink,
   isForwardedAdvertisement,
+  isServiceMessage,
   panelKeyboard,
   parseBannedWords,
   validateFloodSettings,
