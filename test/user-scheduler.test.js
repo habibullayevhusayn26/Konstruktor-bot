@@ -536,6 +536,74 @@ test("native chat picker accepts a shared group outside the recent dialog list",
   }
 });
 
+test("text schedules send directly even if source MTProto copy validation fails", async () => {
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+  try {
+    const bot = new BotConstructor("test-token");
+    const doc = {
+      _id: 123456,
+      ownerId: 77,
+      username: "test_user_bot",
+      userSessionEncrypted: "encrypted-session",
+      userAccount: { id: "77" },
+      userSchedule: {
+        messageRef: {
+          messageIds: [42],
+          mtprotoMessageIds: [999],
+          forwarded: false,
+          description: "matn",
+          text: "Oddiy matn xabari",
+        },
+        intervalSeconds: 10,
+        chatIds: ["peer-1"],
+        enabled: true,
+        nextRunAt: new Date(Date.now() - 1_000),
+      },
+    };
+    let sendResolve;
+    const sendCalled = new Promise((resolve) => { sendResolve = resolve; });
+    const groupEntity = { className: "Chat", title: "Group" };
+    const sent = [];
+    const client = {
+      connect: async () => {},
+      checkAuthorization: async () => true,
+      getMe: async () => ({ id: 77, username: "owner" }),
+      getDialogs: async () => [{ isGroup: true, title: "Group", entity: groupEntity }],
+      getEntity: async () => ({ className: "User", username: "test_user_bot" }),
+      getPeerId: async () => "peer-1",
+      getMessages: async () => {
+        throw new Error("provided message id is invalid");
+      },
+      sendMessage: async (target, params) => {
+        sent.push({ target, params });
+        sendResolve();
+        return { id: 1 };
+      },
+      disconnect: async () => {},
+    };
+    const { runtime } = registerTestScheduler(bot, {
+      doc,
+      encryptSecret: (value) => value,
+      decryptSecret: (value) => value,
+      createTelegramClient: () => client,
+    });
+
+    await runtime.start();
+    await sendCalled;
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].params, { message: "Oddiy matn xabari" });
+    await runtime.stop();
+  } finally {
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
+});
+
 test("scheduled messages copy owner forwards and preserve third-party forwards", async (t) => {
   const oldApiId = process.env.TELEGRAM_API_ID;
   const oldApiHash = process.env.TELEGRAM_API_HASH;

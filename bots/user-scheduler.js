@@ -500,15 +500,54 @@ function registerUserSchedulerSession(bot, options) {
     if (!isValidMessageRef(schedule.messageRef)) {
       return userClient.sendMessage(target, { message: schedule.message });
     }
+    if (
+      schedule.messageRef.description === "matn" &&
+      typeof schedule.messageRef.text === "string" &&
+      schedule.messageRef.text
+    ) {
+      if (schedule.messageRef.forwarded) {
+        const sourcePeer = await getSourceBotPeer();
+        const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
+        if (mtprotoIds?.length) {
+          try {
+            await userClient.forwardMessages(target, {
+              messages: mtprotoIds,
+              fromPeer: sourcePeer,
+            });
+            return;
+          } catch (error) {
+            console.error(
+              `User scheduler ${doc._id} forward manbasini yubora olmadi:`,
+              error?.message || error?.errorMessage || error?.name,
+            );
+          }
+        }
+      }
+      await userClient.sendMessage(target, { message: schedule.messageRef.text });
+      return;
+    }
     const sourcePeer = await getSourceBotPeer();
     const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
     const messageIds = mtprotoIds
       ? mtprotoIds
       : schedule.messageRef.messageIds;
     if (typeof userClient.getMessages === "function") {
-      const sourceMessages = await userClient.getMessages(sourcePeer, {
-        ids: messageIds,
-      });
+      let sourceMessages;
+      try {
+        sourceMessages = await userClient.getMessages(sourcePeer, {
+          ids: messageIds,
+        });
+      } catch (error) {
+        console.error(
+          `User scheduler ${doc._id} manba xabarini tekshira olmadi:`,
+          error?.message || error?.errorMessage || error?.name,
+        );
+        if (typeof schedule.messageRef.text === "string" && schedule.messageRef.text) {
+          await userClient.sendMessage(target, { message: schedule.messageRef.text });
+          return;
+        }
+        throw error;
+      }
       const validIds = sourceMessages
         .filter((message) => message && Number.isSafeInteger(message.id))
         .map((message) => message.id);
@@ -715,9 +754,9 @@ function registerUserSchedulerSession(bot, options) {
           sent++;
         } catch (error) {
           failed++;
+          const detail = error?.errorMessage || error?.description || error?.message || error?.name || "Noma'lum xato";
           console.error(
-            `User scheduler ${doc._id} ${target.peerId} chatiga yubora olmadi:`,
-            error.message,
+            `User scheduler ${doc._id} ${target.peerId} chatiga yubora olmadi: ${detail}`,
           );
         }
       }
@@ -728,8 +767,8 @@ function registerUserSchedulerSession(bot, options) {
       if (failed > 0) {
         await notifyOwner(
           `${failed} ta chatga rejalashtirilgan xabar yuborilmadi. ` +
-            "Ko'pincha manba xabar hali Telegram bilan sinxronlanmagan yoki manzilga yozish huquqi yetarli emas. " +
-            "Xabarni qayta yuborib, chatlarni qayta tanlang.",
+            "Chatga yozish huquqini, Telegram sessiyasini va manzilni tekshiring; " +
+            "muammo davom etsa xabarni qayta yuboring.",
         );
       }
     } catch (error) {
