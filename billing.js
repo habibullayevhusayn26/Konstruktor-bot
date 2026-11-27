@@ -8,6 +8,7 @@ const BOT_TYPES = [
   "watermark",
   "file-editor",
   "image-text",
+  "guard",
 ];
 
 const DEFAULT_BILLING_SETTINGS = Object.freeze({

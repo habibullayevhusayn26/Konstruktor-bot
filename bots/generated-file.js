@@ -37,6 +37,11 @@ const BOT_TYPES = Object.freeze({
     description: "Uzum shablonidagi O'tkazildi yozuvi ostiga aniq ma'lumotlarni qo'shing.",
     module: "image-text-editor",
   },
+  guard: {
+    label: "Telegram Qorovul Bot",
+    description: "Guruhlarni captcha, spam filtri, flood nazorati, warn tizimi va shaxsiy admin panel orqali boshqaring.",
+    runtime: "webhook",
+  },
 });
 
 const generatedDirectory = path.join(__dirname, "generated");
@@ -52,6 +57,9 @@ function generatedFilePath(botId) {
 async function writeGeneratedBotFile(doc) {
   const botType = BOT_TYPES[doc.type];
   if (!botType) throw new Error("Noma'lum tayyor bot turi.");
+  if (!botType.module) {
+    throw new Error("Bu bot turi alohida runtime orqali ishga tushiriladi.");
+  }
 
   const botId = Number(doc._id);
   const filePath = generatedFilePath(botId);

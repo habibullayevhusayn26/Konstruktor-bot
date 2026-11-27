@@ -6,6 +6,12 @@ require("dotenv").config();
 const http = require("node:http");
 const crypto = require("node:crypto");
 const { ObjectId } = require("mongodb");
+const { webhookCallback } = require("grammy");
+const { createGuardBot } = require("./bots/guard-bot");
+const {
+  closeGuardDatabase,
+  getGuardDatabase,
+} = require("./bots/guard/database");
 const { BotConstructor } = require("./bot-constructor");
 const {
   BillingService,
@@ -98,13 +104,49 @@ const getConstructorGateChats = () => {
   }
   return [];
 };
-const children = new Map(); // botId -> BotConstructor (ishlayotgan mijoz botlari)
+const children = new Map(); // botId -> ishlayotgan mijoz bot runtime
 const childPolls = new Set();
+const guardWebhooks = new Map(); // webhook pathname -> grammY HTTP handler
 const states = new Map(); // userId -> kutilayotgan kiritish holati
 
 /* ---------- Mijoz botlarini ishga tushirish ---------- */
 async function buildChild(doc) {
   if (!BOT_TYPES[doc.type]) throw new Error("Noma'lum tayyor bot turi.");
+  if (doc.type === "guard") {
+    if (!PUBLIC_API_URL) {
+      throw new Error("Guard Bot webhook'i uchun PUBLIC_API_URL sozlanishi kerak.");
+    }
+    const publicUrl = new URL(PUBLIC_API_URL);
+    if (publicUrl.protocol !== "https:") {
+      throw new Error("Guard Bot webhook'i uchun PUBLIC_API_URL HTTPS bo'lishi kerak.");
+    }
+    if (publicUrl.search || publicUrl.hash) {
+      throw new Error("PUBLIC_API_URL query yoki fragment qismini o'z ichiga olmasin.");
+    }
+    if (!doc.webhookSecret) {
+      doc.webhookSecret = crypto.randomBytes(32).toString("hex");
+      await Bots.updateOne(
+        { _id: doc._id },
+        { $set: { webhookSecret: doc.webhookSecret } },
+      );
+    }
+    if (!/^[\w-]{1,256}$/.test(doc.webhookSecret)) {
+      throw new Error("Guard Bot webhook secret formati noto'g'ri.");
+    }
+    const runtime = createGuardBot(decrypt(doc.token), {
+      botId: doc._id,
+      database: await getGuardDatabase(),
+    });
+    await runtime.initialize();
+    runtime.config = doc;
+    runtime.api = (method, payload) => runtime.bot.api.call(method, payload);
+    const pathPrefix = publicUrl.pathname.replace(/\/+$/, "");
+    runtime.webhookPath = `${pathPrefix}/webhook/guard/${doc._id}/${doc.webhookSecret}`;
+    runtime.isWebhook = true;
+    runtime.stop = () => runtime.cleanup();
+    return runtime;
+  }
+
   const filePath = await writeGeneratedBotFile(doc);
   const generated = require(filePath);
   if (generated.botId !== Number(doc._id)) {
@@ -142,6 +184,26 @@ async function buildChild(doc) {
 async function startChild(doc) {
   if (children.has(doc._id) || doc.banned || doc.billingStatus === "suspended") return;
   const child = await buildChild(doc);
+  if (child.isWebhook) {
+    const callback = webhookCallback(child.bot, "http", {
+      secretToken: doc.webhookSecret,
+    });
+    guardWebhooks.set(child.webhookPath, callback);
+    try {
+      await child.api("setWebhook", {
+        url: `${new URL(PUBLIC_API_URL).origin}${child.webhookPath}`,
+        secret_token: doc.webhookSecret,
+        allowed_updates: ["message", "callback_query", "my_chat_member"],
+      });
+      children.set(doc._id, child);
+    } catch (error) {
+      guardWebhooks.delete(child.webhookPath);
+      child.stop();
+      throw error;
+    }
+    return;
+  }
+
   await child.deleteWebhook();
   children.set(doc._id, child);
   child.polling = child.launch();
@@ -171,6 +233,12 @@ async function startChild(doc) {
 function stopChild(id) {
   const c = children.get(id);
   if (c) {
+    if (c.webhookPath) {
+      guardWebhooks.delete(c.webhookPath);
+      c.api("deleteWebhook").catch((error) => {
+        console.error(`@${c.config.username} webhook'ini o'chirib bo'lmadi:`, error.message);
+      });
+    }
     c.stop();
     children.delete(id);
   }
@@ -202,6 +270,9 @@ async function createBot(ownerId, botType, token) {
     username: info.username,
     ownerId,
     type: botType,
+    ...(botType === "guard"
+      ? { webhookSecret: crypto.randomBytes(32).toString("hex") }
+      : {}),
     welcome:
       botType === "smm"
         ? "Nakrutka/SMM xizmatlariga buyurtma berish botiga xush kelibsiz!"
@@ -213,7 +284,9 @@ async function createBot(ownerId, botType, token) {
             ? "Kanal postlariga o'z matningizni avtomatik qo'shing."
             : botType === "watermark"
               ? "Logo, rasm o'lchami va watermark joyini tanlab, rasmingizga belgi qo'shing."
-              : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
+              : botType === "guard"
+                ? "Guruhni captcha va spamdan himoyalash uchun Telegram Qorovul Bot."
+                : "Fayl yuboring — nomi, rasmi va MP3 ma'lumotlarini tahrirlayman.",
     requiredChannel: null,
     banned: false,
     billingStatus: "trial",
@@ -304,6 +377,25 @@ async function readSmmApiBody(request) {
 async function startHealthServer(mother) {
   const server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    const guardWebhook = guardWebhooks.get(pathname);
+    if (guardWebhook) {
+      if (request.method !== "POST") {
+        response.writeHead(405, { Allow: "POST" });
+        response.end();
+        return;
+      }
+      try {
+        await guardWebhook(request, response);
+      } catch (error) {
+        console.error("Guard Bot webhook update xatosi:", error.message);
+        if (!response.headersSent) {
+          response.writeHead(500);
+          response.end("Webhook update bajarilmadi.");
+        }
+      }
+      return;
+    }
+
     const smmApiMatch = pathname.match(/^\/api\/smm\/(\d+)\/v2$/);
     if (smmApiMatch) {
       if (request.method !== "POST") {
@@ -439,7 +531,9 @@ const botPanel = (b) => [
     (b.pricing
       ? `Tarif: ${b.pricing.initial.toLocaleString("uz-UZ")} + ${b.pricing.monthly.toLocaleString("uz-UZ")} so'm/oy\n\n`
       : "") +
-    (b.type === "footer"
+    (b.type === "guard"
+      ? "Guruhga qo'shib administrator qiling, so'ng guruh egasi /claim yuborsin. Panelni bot bilan shaxsiy chatdagi /start orqali oching."
+      : b.type === "footer"
       ? "Tag matni va kanalni sozlash uchun bot ichida /start bosing.\nAdmin panel: /admin."
       : b.type === "watermark"
         ? "Logo, rasm o'lchami va watermark joyini tanlash uchun bot ichida /start bosing.\nAdmin panel: /admin."
@@ -1290,6 +1384,7 @@ async function main() {
     await Subs.deleteMany({ botId: b._id });
     await FooterSettings.deleteOne({ botId: b._id });
     await WatermarkProfiles.deleteMany({ botId: b._id });
+    if (b.type === "guard") await (await getGuardDatabase()).deleteBot(b._id);
     await removeGeneratedBotFile(b._id).catch((error) => {
       console.error(`@${b.username} bot faylini o'chirib bo'lmadi:`, error.message);
     });
@@ -2047,7 +2142,9 @@ async function main() {
                     ? "✅ Fayl tahrirlovchi bot yaratildi. 3 kunlik bepul sinov boshlandi. /start yuborib faylni tahrirlashni boshlang."
                     : doc.type === "image-text"
                       ? "✅ Rasm sarlavhasi tahrirlovchi bot yaratildi. 3 kunlik bepul sinov boshlandi. /start yuborib sarlavhani o'zgartiring."
-                      : "✅ Tayyor bot yaratildi. 3 kunlik bepul sinov boshlandi. Sozlash shart emas.",
+                      : doc.type === "guard"
+                        ? "✅ Telegram Qorovul Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botni guruhga qo'shib administrator qiling va guruh egasi /claim buyrug'ini yuborsin."
+                        : "✅ Tayyor bot yaratildi. 3 kunlik bepul sinov boshlandi. Sozlash shart emas.",
             );
             await ctx.reply(
               `Trial tugagach ${money(doc.pricing.initial)} boshlang'ich va ` +
@@ -2240,6 +2337,7 @@ async function main() {
     await new Promise((resolve, reject) => {
       healthServer.close((error) => (error ? reject(error) : resolve()));
     });
+    await closeGuardDatabase();
     await mother.closeDatabase();
   };
 

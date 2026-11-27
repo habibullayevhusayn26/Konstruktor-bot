@@ -4,3 +4,4 @@
 node_modules/
 npm-debug.log*
 bots/generated/*.js
+data/*.sqlite*
