@@ -459,9 +459,11 @@ function registerUserScheduler(bot, options) {
         lastSentAt: new Date(),
         lastResult: { sent, failed },
       });
-      await notifyOwner(
-        `Rejalashtirilgan yuborish tugadi.\nMuvaffaqiyatli: ${sent}\nXatolik: ${failed}`,
-      );
+      if (failed > 0) {
+        await notifyOwner(
+          `${failed} ta chatga rejalashtirilgan xabar yuborilmadi. /start orqali holatni tekshiring.`,
+        );
+      }
     } catch (error) {
       console.error(`User scheduler ${doc._id} jadval xatosi:`, error.message);
       await notifyOwner("Rejalashtirilgan yuborishda xatolik yuz berdi. /start orqali holatni tekshiring.");
