@@ -154,9 +154,12 @@ test("Mini App login UI keeps the original layout", () => {
     "utf8",
   );
   assert.match(html, /Telegram akkauntni ulash/);
-  assert.match(html, /Telefon raqami/);
-  assert.doesNotMatch(html, /OTP Verification UI/);
-  assert.doesNotMatch(script, /otp-box/);
+  assert.match(html, /Login kodini kiriting/);
+  assert.match(html, /Ikki bosqichli parol/);
+  assert.match(html, /class="otp"/);
+  assert.match(html, /<div class="steps"/);
+  assert.match(script, /otpCells/);
+  assert.match(script, /phoneDigits/);
 });
 
 test("phone numbers with spaces are normalized before login", () => {
