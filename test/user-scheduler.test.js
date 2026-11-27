@@ -9,6 +9,7 @@ const {
   buildMiniAppUrl,
   formatInterval,
   getDialogKind,
+  makeAutoFooter,
   normalizePhoneNumber,
   parseInterval,
   registerUserScheduler,
@@ -121,6 +122,15 @@ test("user scheduler interval supports ten seconds to thirty days", () => {
   assert.throws(() => parseInterval("00:00:09"), /10 soniya/);
   assert.throws(() => parseInterval("720:00:01"), /30 kundan/);
   assert.throws(() => parseInterval("1h"), /soat:daqiqa/);
+});
+
+test("auto-message footer preserves base content and adds one blank line", () => {
+  assert.equal(
+    makeAutoFooter("habibullayev_28"),
+    "\n\n🤖 Xabar @habibullayev_28 orqali yuborildi! ✅",
+  );
+  assert.equal(makeAutoFooter("@habibullayev_28"), "\n\n🤖 Xabar @habibullayev_28 orqali yuborildi! ✅");
+  assert.equal(makeAutoFooter(""), "");
 });
 
 test("Mini App URL requires HTTPS and preserves the configured path prefix", () => {
@@ -729,9 +739,13 @@ test("text schedules send directly even if source MTProto copy validation fails"
     await runtime.start();
     await sendCalled;
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].params.message, "Oddiy matn xabari");
-    assert.equal(sent[0].params.formattingEntities[0].className, "MessageEntityCustomEmoji");
-    assert.equal(String(sent[0].params.formattingEntities[0].documentId), "5260726538302660868");
+    assert.equal(
+      sent[0].params.message,
+      "Oddiy matn xabari\n\n🤖 Xabar @test_user_bot orqali yuborildi! ✅",
+    );
+    assert.ok(sent[0].params.formattingEntities.some(
+      (entity) => entity.className === "MessageEntityCustomEmoji",
+    ));
     await runtime.stop();
   } finally {
     if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;

@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const { Api, TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 const { NewMessage } = require("teleproto/events");
+const { EMOJI_IDS } = require("./premium-emojis");
 const { BotConstructor } = require("../bot-constructor");
 
 const MIN_INTERVAL_SECONDS = 10;
@@ -59,6 +60,13 @@ function formatInterval(seconds) {
     String(minutes).padStart(2, "0"),
     String(rest).padStart(2, "0"),
   ].join(":");
+}
+
+function makeAutoFooter(username) {
+  const normalizedUsername = String(username || "").replace(/^@/, "");
+  return normalizedUsername
+    ? `\n\n🤖 Xabar @${normalizedUsername} orqali yuborildi! ✅`
+    : "";
 }
 
 function createTelegramClient(session, apiId, apiHash) {
@@ -570,6 +578,63 @@ function registerUserSchedulerSession(bot, options) {
     return rows.length ? rows : undefined;
   }
 
+  function buildAutoFooter() {
+    return makeAutoFooter(doc.username);
+  }
+
+  function appendAutoFooter(text) {
+    const footer = buildAutoFooter();
+    if (!footer) return { text: text || "", entities: [] };
+    const base = String(text || "");
+    const separator = base.endsWith("\n\n")
+      ? ""
+      : base.endsWith("\n")
+        ? "\n"
+        : "\n\n";
+    const footerWithSeparator = `${separator}${footer.replace(/^\n\n/, "")}`;
+    const result = `${base}${footerWithSeparator}`;
+    const robotIndex = base.length + footerWithSeparator.indexOf("🤖");
+    const checkIndex = result.lastIndexOf("✅");
+    const robotId = EMOJI_IDS["🤖"]?.[0];
+    const checkId = EMOJI_IDS["✅"]?.[0];
+    const entities = [];
+    if (robotId) {
+      entities.push(new Api.MessageEntityCustomEmoji({
+        offset: robotIndex,
+        length: 2,
+        documentId: robotId,
+      }));
+    }
+    if (checkId) {
+      entities.push(new Api.MessageEntityCustomEmoji({
+        offset: checkIndex,
+        length: 1,
+        documentId: checkId,
+      }));
+    }
+    return { text: result, entities };
+  }
+
+  function buildTextSendParams(text, messageRef) {
+    const originalEntities = convertFormattingEntities(messageRef?.entities);
+    const appended = appendAutoFooter(text);
+    const originalText = String(text || "").trimEnd();
+    const footerEntities = appended.entities.map((entity) => {
+      if (entity.offset >= originalText.length) return entity;
+      return entity;
+    });
+    const entities = [
+      ...originalEntities,
+      ...footerEntities,
+    ].sort((left, right) => left.offset - right.offset);
+    const buttons = convertReplyMarkup(messageRef?.replyMarkup);
+    return {
+      message: appended.text,
+      formattingEntities: entities,
+      ...(buttons ? { buttons } : {}),
+    };
+  }
+
   function isForwardedFromAnotherUser(message) {
     const origin = message.forward_origin;
     const fromUserId = origin?.type === "user"
@@ -657,38 +722,47 @@ function registerUserSchedulerSession(bot, options) {
 
   async function sendScheduledMessage(target, schedule) {
     if (!isValidMessageRef(schedule.messageRef)) {
-      return userClient.sendMessage(target, { message: schedule.message });
+      return userClient.sendMessage(
+        target,
+        buildTextSendParams(schedule.message, {}),
+      );
     }
     if (
       schedule.messageRef.description === "matn" &&
       typeof schedule.messageRef.text === "string" &&
       schedule.messageRef.text
     ) {
-      const formattingEntities = convertFormattingEntities(schedule.messageRef.entities);
-      const buttons = convertReplyMarkup(schedule.messageRef.replyMarkup);
-      if (schedule.messageRef.forwarded) {
-        const sourcePeer = await getSourceBotPeer();
-        const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
-        if (mtprotoIds?.length) {
-          try {
-            await userClient.forwardMessages(target, {
-              messages: mtprotoIds,
-              fromPeer: sourcePeer,
+      const sourcePeer = await getSourceBotPeer();
+      const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
+      const sendParams = buildTextSendParams(schedule.messageRef.text, schedule.messageRef);
+      if (mtprotoIds?.length) {
+        try {
+          const sent = schedule.messageRef.forwarded
+            ? await userClient.forwardMessages(target, {
+                messages: mtprotoIds,
+                fromPeer: sourcePeer,
+              })
+            : await userClient.copyMessages(target, {
+                messages: mtprotoIds,
+                fromPeer: sourcePeer,
+              });
+          if (Array.isArray(sent) && sent[0] && typeof userClient.editMessage === "function") {
+            await userClient.editMessage(target, {
+              message: sent[0],
+              text: sendParams.message,
+              formattingEntities: sendParams.formattingEntities,
+              ...(sendParams.buttons ? { buttons: sendParams.buttons } : {}),
             });
             return;
-          } catch (error) {
-            console.error(
-              `User scheduler ${doc._id} forward manbasini yubora olmadi:`,
-              error?.message || error?.errorMessage || error?.name,
-            );
           }
+        } catch (error) {
+          console.error(
+            `User scheduler ${doc._id} matn manbasini footer bilan tahrirlay olmadi:`,
+            error?.message || error?.errorMessage || error?.name,
+          );
         }
       }
-      await userClient.sendMessage(target, {
-        message: schedule.messageRef.text,
-        formattingEntities,
-        ...(buttons ? { buttons } : {}),
-      });
+      await userClient.sendMessage(target, sendParams);
       return;
     }
     const sourcePeer = await getSourceBotPeer();
@@ -712,13 +786,10 @@ function registerUserSchedulerSession(bot, options) {
           typeof schedule.messageRef.text === "string" &&
           schedule.messageRef.text
         ) {
-          await userClient.sendMessage(target, {
-            message: schedule.messageRef.text,
-            formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
-            ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
-              ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
-              : {}),
-          });
+          await userClient.sendMessage(
+            target,
+            buildTextSendParams(schedule.messageRef.text, schedule.messageRef),
+          );
           return;
         }
         throw error;
@@ -731,13 +802,10 @@ function registerUserSchedulerSession(bot, options) {
           schedule.messageRef.description === "matn" &&
           schedule.messageRef.text
         ) {
-          await userClient.sendMessage(target, {
-            message: schedule.messageRef.text,
-            formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
-            ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
-              ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
-              : {}),
-          });
+          await userClient.sendMessage(
+            target,
+            buildTextSendParams(schedule.messageRef.text, schedule.messageRef),
+          );
           return;
         }
         throw new Error(
@@ -750,13 +818,10 @@ function registerUserSchedulerSession(bot, options) {
             schedule.messageRef.description === "matn" &&
             schedule.messageRef.text
           ) {
-            await userClient.sendMessage(target, {
-              message: schedule.messageRef.text,
-              formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
-              ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
-                ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
-                : {}),
-            });
+            await userClient.sendMessage(
+              target,
+              buildTextSendParams(schedule.messageRef.text, schedule.messageRef),
+            );
             return;
           }
           throw new Error(
@@ -772,6 +837,35 @@ function registerUserSchedulerSession(bot, options) {
     const sent = schedule.messageRef.forwarded
       ? await userClient.forwardMessages(target, params)
       : await userClient.copyMessages(target, params);
+    if (Array.isArray(sent) && sent.length && typeof userClient.editMessage === "function") {
+      for (let index = 0; index < sent.length; index++) {
+        const sentMessage = sent[index];
+        if (!sentMessage) continue;
+        const originalCaption =
+          typeof sentMessage.message === "string"
+            ? sentMessage.message
+            : index === 0
+              ? schedule.messageRef.text || ""
+              : "";
+        if (!originalCaption.trim()) continue;
+        const captionParams =
+          index === 0
+            ? buildTextSendParams(originalCaption, schedule.messageRef)
+            : appendAutoFooter(originalCaption);
+        try {
+          await userClient.editMessage(target, {
+            message: sentMessage,
+            text: captionParams.text || captionParams.message,
+            formattingEntities: captionParams.entities || captionParams.formattingEntities || [],
+          });
+        } catch (error) {
+          console.error(
+            `User scheduler ${doc._id} media izohiga footer qo'shib bo'lmadi:`,
+            error?.message || error?.errorMessage || error?.name,
+          );
+        }
+      }
+    }
     if (
       !Array.isArray(sent) ||
       sent.length !== schedule.messageRef.messageIds.length ||
@@ -2086,6 +2180,7 @@ module.exports = Object.assign(registerUserScheduler, {
   MIN_INTERVAL_SECONDS,
   buildMiniAppUrl,
   formatInterval,
+  makeAutoFooter,
   getDialogKind,
   normalizePhoneNumber,
   parseInterval,
