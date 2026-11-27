@@ -272,6 +272,11 @@ test("each private user gets an isolated panel and schedule", async () => {
   assert.equal(callbackAnswers.length, 1);
   assert.match(replies[0].text, /USER BOT — BOSHQARUV PANELI/);
   assert.match(replies[0].text, /Interval: 01:00:00/);
+  assert.match(replies[0].text, /Tanlangan chatlar:/);
+  assert.match(replies[0].options.reply_markup.inline_keyboard[0][0].text, /Akkaunt/);
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[1].length, 2);
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[3][0].style, "success");
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[4][0].text, "To'xtatish");
   assert.match(replies[1].text, /USER BOT — BOSHQARUV PANELI/);
   assert.equal(replies[1].options.reply_markup.inline_keyboard[0][0].style, "primary");
   assert.equal(replies[2].chatId, 88);
@@ -328,7 +333,7 @@ test("legacy bot-owner account is migrated without sharing it with other users",
 
     assert.equal(userRecords.get("123456:77").userSessionEncrypted, "owner-encrypted-session");
     assert.equal(userRecords.get("123456:88").userSessionEncrypted, undefined);
-    assert.match(replies[0].text, /Ulangan: @owner/);
+    assert.match(replies[0].text, /Akkaunt: @owner/);
     assert.match(replies[1].text, /Telegram akkaunt ulanmagan/);
   } finally {
     await runtime.stop();

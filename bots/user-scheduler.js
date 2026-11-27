@@ -211,30 +211,40 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   function panelKeyboard() {
-    const schedule = getSchedule();
     return {
       inline_keyboard: [
         [userClient
           ? {
               text: `Akkaunt: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "ulangan"}`,
               callback_data: "userbot:account",
-              style: "success",
+              style: "primary",
             }
           : {
-              text: "Mini App orqali akkauntni ulash",
+              text: "Akkauntni Mini App orqali ulash",
               ...(miniAppUrl
                 ? { web_app: { url: miniAppUrl } }
                 : { callback_data: "userbot:connect" }),
               style: "primary",
             }],
-        [{ text: "Guruh va kanallarni tanlash", callback_data: "userbot:chats", style: "primary" }],
-        [{ text: "Takrorlanadigan xabarni tanlash", callback_data: "userbot:message", style: "primary" }],
-        [{ text: "Takrorlanish intervali", callback_data: "userbot:interval", style: "primary" }],
-        [{ text: "Ko'rib chiqish va boshlash", callback_data: "userbot:preview", style: "success" }],
-        [{ text: "Jadvalni to'xtatish", callback_data: "userbot:stop", style: "danger" }],
-        ...(doc.userSessionEncrypted
-          ? [[{ text: "Akkauntni uzish", callback_data: "userbot:unlink", style: "danger" }]]
-          : []),
+        [
+          { text: "Chatlarni tanlash", callback_data: "userbot:chats", style: "primary" },
+          { text: "Xabarni tanlash", callback_data: "userbot:message", style: "primary" },
+        ],
+        [
+          { text: "Interval", callback_data: "userbot:interval", style: "primary" },
+          { text: "Jadval", callback_data: "userbot:preview", style: "primary" },
+        ],
+        [{
+          text: "Ko'rib chiqish va boshlash",
+          callback_data: "userbot:preview",
+          style: "success",
+        }],
+        [
+          { text: "To'xtatish", callback_data: "userbot:stop", style: "danger" },
+          ...(doc.userSessionEncrypted
+            ? [{ text: "Akkauntni uzish", callback_data: "userbot:unlink", style: "danger" }]
+            : [{ text: "Yangilash", callback_data: "userbot:panel", style: "danger" }]),
+        ],
       ],
     };
   }
@@ -249,20 +259,24 @@ function registerUserSchedulerSession(bot, options) {
     const nextRun = schedule.nextRunAt
       ? new Date(schedule.nextRunAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })
       : "Belgilanmagan";
+    const messageText = isValidMessageRef(schedule.messageRef)
+        ? `${schedule.messageRef.description || "Telegram xabari"}${schedule.messageRef.forwarded ? " · forward" : ""}`
+        : schedule.message
+          ? schedule.message.slice(0, 250)
+          : "Belgilanmagan";
     const text =
       `USER BOT — BOSHQARUV PANELI\n\n` +
-      `${account}\n` +
+      `Akkaunt: ${account.replace(/^Ulangan:\s*/, "").replace(/^Akkaunt sessiyasi/, "Sessiya")}\n` +
       `Tanlangan chatlar: ${schedule.chatIds.length}\n` +
       `Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
       `Jadval: ${schedule.enabled ? "Faol" : "To'xtatilgan"}\n` +
-      `Keyingi yuborish: ${nextRun}\n\n` +
-      (isValidMessageRef(schedule.messageRef)
-        ? `Xabar: ${schedule.messageRef.description || "Telegram xabari"}${schedule.messageRef.forwarded ? " (forward)" : ""}`
-        : schedule.message
-          ? `Xabar: ${schedule.message.slice(0, 250)}`
-          : "Takrorlanadigan xabar hali tanlanmagan.") +
+      `Keyingi yuborish: ${nextRun}\n` +
+      `Xabar turi: ${messageText}\n\n` +
+      (schedule.enabled
+        ? "Jadval faol. Yangi xabar yuborishlar belgilangan intervalda davom etadi."
+        : "Jadval to'xtatilgan. Yangi yuborishlar bajarilmaydi.") +
       (extraText ? `\n\n${extraText}` : "") +
-      `\n\nAkkauntingiz a'zo bo'lgan guruh va kanallar ko'rsatiladi. ` +
+      `\n\nHar bir foydalanuvchi faqat o'z Telegram akkaunti va jadvalini boshqaradi. ` +
       `Eng qisqa interval: 00:00:10.`;
     const markup = panelKeyboard();
     if (edit && typeof ctx.edit === "function") {
