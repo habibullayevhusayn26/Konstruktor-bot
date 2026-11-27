@@ -297,6 +297,9 @@ test("each private user gets an isolated panel and schedule", async () => {
   assert.match(replies[0].text, /USER BOT — BOSHQARUV PANELI/);
   assert.match(replies[0].text, /Interval: 01:00:00/);
   assert.match(replies[0].text, /Tanlangan chatlar:/);
+  assert.doesNotMatch(replies[0].text, /Eng qisqa interval/);
+  assert.doesNotMatch(replies[0].text, /Har bir foydalanuvchi/);
+  assert.doesNotMatch(replies[0].text, /Yangi yuborishlar/);
   assert.match(replies[0].options.reply_markup.inline_keyboard[0][0].text, /Akkaunt/);
   assert.equal(replies[0].options.reply_markup.inline_keyboard[1].length, 2);
   assert.equal(replies[0].options.reply_markup.inline_keyboard[3][0].style, "success");
@@ -358,7 +361,7 @@ test("legacy bot-owner account is migrated without sharing it with other users",
     assert.equal(userRecords.get("123456:77").userSessionEncrypted, "owner-encrypted-session");
     assert.equal(userRecords.get("123456:88").userSessionEncrypted, undefined);
     assert.match(replies[0].text, /Akkaunt: @owner/);
-    assert.match(replies[1].text, /Telegram akkaunt ulanmagan/);
+    assert.match(replies[1].text, /Akkaunt: ulangan emas/);
   } finally {
     await runtime.stop();
     if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;

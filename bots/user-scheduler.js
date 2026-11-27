@@ -258,33 +258,43 @@ function registerUserSchedulerSession(bot, options) {
 
   async function showPanel(ctx, edit = false, extraText = "") {
     const schedule = getSchedule();
-    const account = userClient
-      ? `Ulangan: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "Telegram akkaunt"}`
-      : doc.userSessionEncrypted
-        ? "Akkaunt sessiyasi ulanmagan — qayta ulash kerak."
-        : "Telegram akkaunt ulanmagan.";
+    const account = doc.userAccount?.username
+      ? `@${doc.userAccount.username}`
+      : userClient
+        ? "Telegram akkaunt"
+        : "ulangan emas";
     const nextRun = schedule.nextRunAt
-      ? new Date(schedule.nextRunAt).toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })
+      ? new Date(schedule.nextRunAt).toLocaleString("uz-UZ", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          timeZone: "Asia/Tashkent",
+        })
       : "Belgilanmagan";
-    const messageText = isValidMessageRef(schedule.messageRef)
-        ? `${schedule.messageRef.description || "Telegram xabari"}${schedule.messageRef.forwarded ? " · forward" : ""}`
-        : schedule.message
-          ? schedule.message.slice(0, 250)
-          : "Belgilanmagan";
+    let messageText = "Belgilanmagan";
+    if (isValidMessageRef(schedule.messageRef)) {
+      const description = schedule.messageRef.description || "xabar";
+      if (["rasm", "video"].includes(description)) {
+        messageText = `${description}${schedule.messageRef.text?.trim() ? " (izohli)" : " (izohsiz)"}`;
+      } else {
+        messageText = description;
+      }
+    } else if (typeof schedule.message === "string" && schedule.message.trim()) {
+      messageText = "matn";
+    }
+    const chatCount = schedule.chatIds.length;
     const text =
-      `USER BOT — BOSHQARUV PANELI\n\n` +
-      `Akkaunt: ${account.replace(/^Ulangan:\s*/, "").replace(/^Akkaunt sessiyasi/, "Sessiya")}\n` +
-      `Tanlangan chatlar: ${schedule.chatIds.length}\n` +
-      `Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
-      `Jadval: ${schedule.enabled ? "Faol" : "To'xtatilgan"}\n` +
-      `Keyingi yuborish: ${nextRun}\n` +
-      `Xabar turi: ${messageText}\n\n` +
-      (schedule.enabled
-        ? "Jadval faol. Yangi xabar yuborishlar belgilangan intervalda davom etadi."
-        : "Jadval to'xtatilgan. Yangi yuborishlar bajarilmaydi.") +
-      (extraText ? `\n\n${extraText}` : "") +
-      `\n\nHar bir foydalanuvchi faqat o'z Telegram akkaunti va jadvalini boshqaradi. ` +
-      `Eng qisqa interval: 00:00:10.`;
+      `🖼 USER BOT — BOSHQARUV PANELI\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n` +
+      `👤 Akkaunt: ${account}\n` +
+      `💬 Tanlangan chatlar: ${chatCount} ta\n` +
+      `⏱ Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
+      `📨 Xabar turi: ${messageText}\n\n` +
+      `📅 Jadval: ${schedule.enabled ? "🟢 Faol" : "🔴 To'xtatilgan"}\n` +
+      `⏭ Keyingi yuborish: ${nextRun}`;
     const markup = panelKeyboard();
     if (edit && typeof ctx.edit === "function") {
       await ctx.edit(text, { reply_markup: markup });
