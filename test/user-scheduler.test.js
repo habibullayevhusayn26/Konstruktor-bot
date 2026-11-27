@@ -496,8 +496,14 @@ test("native chat picker accepts a shared group outside the recent dialog list",
     username: "test_user_bot",
     userSessionEncrypted: "encrypted-session",
     userAccount: { id: "77" },
+    requiredChannels: [{
+      chatId: "-100777",
+      title: "Required public channel",
+      link: "https://t.me/required_channel",
+    }],
   };
   const group = { className: "Chat", title: "Shared group" };
+  let joinedRequiredChannel = 0;
   const client = {
     connect: async () => {},
     checkAuthorization: async () => true,
@@ -508,6 +514,10 @@ test("native chat picker accepts a shared group outside the recent dialog list",
       return group;
     },
     getPeerId: async () => "peer-777",
+    joinChannel: async () => {
+      joinedRequiredChannel++;
+      return [];
+    },
     disconnect: async () => {},
   };
   bot.sendMessage = async (chatId, text, options) => {
@@ -541,6 +551,7 @@ test("native chat picker accepts a shared group outside the recent dialog list",
     assert.ok(keyboard[0][1].request_chat);
     assert.equal(keyboard[0][0].request_chat.chat_is_channel, false);
     assert.equal(keyboard[0][1].request_chat.chat_is_channel, true);
+    assert.equal(joinedRequiredChannel, 1);
 
     await bot.processUpdate({
       message: {

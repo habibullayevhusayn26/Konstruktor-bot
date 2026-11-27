@@ -344,6 +344,76 @@ function registerUserSchedulerSession(bot, options) {
     };
   }
 
+  async function ensureTargetMembership(target) {
+    if (!userClient || !target) return true;
+    const entity = target.dialog?.entity || target.dialog;
+    const canJoinDirectly =
+      typeof userClient.joinChannel === "function" &&
+      (
+        entity?.className === "Channel" ||
+        entity?.broadcast ||
+        entity?.megagroup
+      );
+    if (!canJoinDirectly) return true;
+    try {
+      await userClient.joinChannel(entity);
+      return true;
+    } catch (error) {
+      const code = error?.errorMessage || error?.message || "";
+      if (/already|CHAT_INVITE_ALREADY|USER_ALREADY_PARTICIPANT/i.test(code)) return true;
+      console.error(
+        `User scheduler ${doc._id} ${target.peerId} chatiga avtomatik qo'shila olmadi: ${code}`,
+      );
+      return false;
+    }
+  }
+
+  async function ensureRequiredSubscriptions() {
+    if (!userClient) return { joined: 0, failed: [] };
+    const requiredChannels = Array.isArray(doc.requiredChannels)
+      ? doc.requiredChannels
+      : doc.requiredChannel
+        ? [{
+            chatId: doc.requiredChannel,
+            title: doc.requiredChannelTitle,
+            link: doc.requiredChannelLink,
+          }]
+        : [];
+    let joined = 0;
+    const failed = [];
+    for (const required of requiredChannels) {
+      try {
+        const privateInvite =
+          typeof required.link === "string" &&
+          (/t\.me\/\+(?:[^/?#]+)/i.test(required.link) ||
+           /t\.me\/joinchat\//i.test(required.link));
+        if (privateInvite && typeof userClient.importChatInvite === "function") {
+          await userClient.importChatInvite(required.link);
+          joined++;
+          continue;
+        }
+        if (typeof userClient.joinChannel === "function") {
+          const entity = await userClient.getEntity(required.chatId);
+          await userClient.joinChannel(entity);
+          joined++;
+          continue;
+        }
+        failed.push(required.title || String(required.chatId));
+      } catch (error) {
+        const code = error?.errorMessage || error?.message || "";
+        if (/already|CHAT_INVITE_ALREADY|USER_ALREADY_PARTICIPANT/i.test(code)) {
+          joined++;
+        } else {
+          failed.push(required.title || String(required.chatId));
+          console.error(
+            `User scheduler ${doc._id} majburiy obuna ${required.title || required.chatId} ga qo‘shilmadi: ${code}`,
+          );
+        }
+      }
+    }
+    return { joined, failed };
+  }
+
   async function resolveSelectedTargets(selectedIds) {
     const targets = await availableTargets();
     const byId = new Map(targets.map((target) => [target.peerId, target]));
@@ -756,6 +826,15 @@ function registerUserSchedulerSession(bot, options) {
       return;
     }
 
+    if (!await ensureTargetMembership(target)) {
+      await ctx.reply(
+        "Chatga User akkaunti bilan avtomatik qo‘shilib bo‘lmadi.\n" +
+          "Public guruh/kanal bo‘lsa, botga yana taqdim eting; private chat uchun invite-link orqali qo‘shiling.",
+        { reply_markup: chatPickerKeyboard() },
+      );
+      return;
+    }
+
     const selected = new Set(getSchedule().chatIds);
     const wasSelected = selected.has(target.peerId);
     if (wasSelected) selected.delete(target.peerId);
@@ -873,6 +952,9 @@ function registerUserSchedulerSession(bot, options) {
         }
         const target = targets[index];
         try {
+          if (!await ensureTargetMembership(target)) {
+            throw new Error("Telegram User akkaunti chatga avtomatik a'zo bo'lmadi.");
+          }
           await sendScheduledMessage(target.dialog, schedule);
           sent++;
         } catch (error) {
@@ -1042,6 +1124,7 @@ function registerUserSchedulerSession(bot, options) {
       attachMtprotoSourceListener();
       doc.userSessionEncrypted = encryptedSession;
       doc.userAccount = userAccount;
+      await ensureRequiredSubscriptions();
       attempt.phase = "success";
       attempt.message = "Akkaunt xavfsiz ulandi. Mini App’ni yopib, bot panelidan davom eting.";
       attempt.closed = true;
@@ -1278,6 +1361,7 @@ function registerUserSchedulerSession(bot, options) {
       sourceBotPeer = null;
       attachMtprotoSourceListener();
       doc.userAccount = { id: String(me.id), username: me.username || "" };
+      await ensureRequiredSubscriptions();
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
       console.error(`User scheduler ${doc._id} sessiyasini tiklab bo'lmadi:`, error.name);
