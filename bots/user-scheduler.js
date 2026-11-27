@@ -4,8 +4,8 @@ const crypto = require("node:crypto");
 const { TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 
-const MIN_INTERVAL_MINUTES = 60;
-const MAX_INTERVAL_MINUTES = 30 * 24 * 60;
+const MIN_INTERVAL_SECONDS = 10;
+const MAX_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
 const DIALOG_LIMIT = 500;
 const TARGETS_PER_PAGE = 8;
 const RUNNER_INTERVAL_MS = 15_000;
@@ -17,7 +17,7 @@ const MAX_LOGIN_STARTS_PER_HOUR = 5;
 const MAX_CREDENTIAL_ATTEMPTS = 5;
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
-  intervalMinutes: MIN_INTERVAL_MINUTES,
+  intervalSeconds: MIN_INTERVAL_SECONDS,
   chatIds: [],
   enabled: false,
   nextRunAt: null,
@@ -25,16 +25,19 @@ const EMPTY_SCHEDULE = Object.freeze({
 });
 
 function parseInterval(value) {
-  const match = String(value).trim().match(/^(\d{1,3}):([0-5]\d)$/);
-  if (!match) throw new Error("Intervalni soat:daqiqa formatida yuboring, masalan 01:30.");
-  const minutes = Number(match[1]) * 60 + Number(match[2]);
-  if (minutes < MIN_INTERVAL_MINUTES) {
-    throw new Error("Xavfsizlik uchun eng qisqa interval 01:00.");
+  const match = String(value).trim().match(/^(\d{1,3}):([0-5]\d)(?::([0-5]\d))?$/);
+  if (!match) throw new Error("Intervalni soat:daqiqa:soniya formatida yuboring, masalan 00:00:10.");
+  const seconds =
+    Number(match[1]) * 60 * 60 +
+    Number(match[2]) * 60 +
+    Number(match[3] || 0);
+  if (seconds < MIN_INTERVAL_SECONDS) {
+    throw new Error("Eng qisqa interval 10 soniya (00:00:10).");
   }
-  if (minutes > MAX_INTERVAL_MINUTES) {
+  if (seconds > MAX_INTERVAL_SECONDS) {
     throw new Error("Interval 30 kundan oshmasin.");
   }
-  return minutes;
+  return seconds;
 }
 
 function canPostToDialog(dialog) {
@@ -47,10 +50,15 @@ function canPostToDialog(dialog) {
     entity.adminRights.postMessages === true;
 }
 
-function formatInterval(minutes) {
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+function formatInterval(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return [
+    String(hours).padStart(2, "0"),
+    String(minutes).padStart(2, "0"),
+    String(rest).padStart(2, "0"),
+  ].join(":");
 }
 
 function createTelegramClient(session, apiId, apiHash) {
@@ -157,13 +165,22 @@ function registerUserScheduler(bot, options) {
   const isOwnerPrivateChat = (ctx) =>
     ctx.chat?.type === "private" && ctx.from?.id === ownerId;
 
-  const getSchedule = () => ({
-    ...EMPTY_SCHEDULE,
-    ...(doc.userSchedule || {}),
-    chatIds: Array.isArray(doc.userSchedule?.chatIds)
-      ? doc.userSchedule.chatIds
-      : [],
-  });
+  const getSchedule = () => {
+    const { intervalMinutes, ...savedSchedule } = doc.userSchedule || {};
+    const savedSeconds =
+      savedSchedule.intervalSeconds == null ? NaN : Number(savedSchedule.intervalSeconds);
+    const legacyMinutes = intervalMinutes == null ? NaN : Number(intervalMinutes);
+    return {
+      ...EMPTY_SCHEDULE,
+      ...savedSchedule,
+      intervalSeconds: Number.isInteger(savedSeconds)
+        ? savedSeconds
+        : Number.isInteger(legacyMinutes)
+          ? legacyMinutes * 60
+          : MIN_INTERVAL_SECONDS,
+      chatIds: Array.isArray(savedSchedule.chatIds) ? savedSchedule.chatIds : [],
+    };
+  };
 
   async function saveSchedule(changes) {
     const userSchedule = { ...getSchedule(), ...changes };
@@ -226,13 +243,13 @@ function registerUserScheduler(bot, options) {
       `USER BOT — BOSHQARUV PANELI\n\n` +
       `${account}\n` +
       `Tanlangan chatlar: ${schedule.chatIds.length}\n` +
-      `Interval: ${formatInterval(Number(schedule.intervalMinutes) || MIN_INTERVAL_MINUTES)}\n` +
+      `Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
       `Jadval: ${schedule.enabled ? "Faol" : "To'xtatilgan"}\n` +
       `Keyingi yuborish: ${nextRun}\n\n` +
       (schedule.message ? `Xabar: ${schedule.message.slice(0, 250)}` : "Xabar matni hali sozlanmagan.") +
       (extraText ? `\n\n${extraText}` : "") +
       `\n\nFaqat siz admin yoki egasi bo'lgan guruh/kanallar ko'rsatiladi. ` +
-      `Eng qisqa interval: 01:00.`;
+      `Eng qisqa interval: 00:00:10.`;
     const markup = panelKeyboard();
     if (edit && typeof ctx.edit === "function") {
       await ctx.edit(text, { reply_markup: markup });
@@ -306,7 +323,7 @@ function registerUserScheduler(bot, options) {
   }
 
   function stopScheduler() {
-    if (schedulerTimer) clearInterval(schedulerTimer);
+    if (schedulerTimer) clearTimeout(schedulerTimer);
     schedulerTimer = null;
   }
 
@@ -326,11 +343,11 @@ function registerUserScheduler(bot, options) {
       completeSend = resolve;
     });
     try {
-      const intervalMinutes = Number(schedule.intervalMinutes);
+      const intervalSeconds = Number(schedule.intervalSeconds);
       if (
-        !Number.isInteger(intervalMinutes) ||
-        intervalMinutes < MIN_INTERVAL_MINUTES ||
-        intervalMinutes > MAX_INTERVAL_MINUTES
+        !Number.isInteger(intervalSeconds) ||
+        intervalSeconds < MIN_INTERVAL_SECONDS ||
+        intervalSeconds > MAX_INTERVAL_SECONDS
       ) {
         await saveSchedule({ enabled: false, nextRunAt: null });
         stopScheduler();
@@ -349,7 +366,7 @@ function registerUserScheduler(bot, options) {
       }
 
       await saveSchedule({
-        nextRunAt: new Date(Date.now() + intervalMinutes * 60_000),
+        nextRunAt: new Date(Date.now() + intervalSeconds * 1_000),
       });
 
       const allowed = await managedTargets();
@@ -413,18 +430,32 @@ function registerUserScheduler(bot, options) {
     }
   }
 
+  function scheduleNextRun() {
+    if (stopping || !userClient || !getSchedule().enabled) return;
+    const nextRunAt = getSchedule().nextRunAt;
+    const dueAt = nextRunAt ? new Date(nextRunAt).getTime() : NaN;
+    const delay = sending || !Number.isFinite(dueAt)
+      ? RUNNER_INTERVAL_MS
+      : Math.max(1_000, Math.min(RUNNER_INTERVAL_MS, dueAt - Date.now()));
+    schedulerTimer = setTimeout(() => {
+      schedulerTimer = null;
+      runSchedulerCheck();
+    }, delay);
+    schedulerTimer.unref?.();
+  }
+
+  function runSchedulerCheck() {
+    runDueSchedule()
+      .catch((error) => {
+        console.error(`User scheduler ${doc._id} ishga tushmadi:`, error.message);
+      })
+      .finally(scheduleNextRun);
+  }
+
   function startScheduler() {
     stopScheduler();
     if (stopping || !userClient || !getSchedule().enabled) return;
-    schedulerTimer = setInterval(() => {
-      runDueSchedule().catch((error) => {
-        console.error(`User scheduler ${doc._id} ishga tushmadi:`, error.message);
-      });
-    }, RUNNER_INTERVAL_MS);
-    schedulerTimer.unref?.();
-    runDueSchedule().catch((error) => {
-      console.error(`User scheduler ${doc._id} ishga tushmadi:`, error.message);
-    });
+    runSchedulerCheck();
   }
 
   function getLoginStatus() {
@@ -914,7 +945,7 @@ function registerUserScheduler(bot, options) {
         await ctx.reply(
           action === "message"
             ? "Takror yuboriladigan matnni yuboring (1–4096 belgi). Saqlashdan oldin xabarni ko'rib chiqasiz."
-            : "Takrorlanish intervalini soat:daqiqa formatida yuboring (masalan, 01:30). Eng qisqa interval — 01:00.",
+            : "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:00:10). Eng qisqa interval — 10 soniya.",
           {
             reply_markup: {
               inline_keyboard: [[{
@@ -935,7 +966,7 @@ function registerUserScheduler(bot, options) {
         await ctx.reply(schedule.message);
         await ctx.reply(
           `Manzillar: ${validation.targets.length}\n` +
-            `Interval: ${formatInterval(schedule.intervalMinutes)}\n` +
+            `Interval: ${formatInterval(schedule.intervalSeconds)}\n` +
             "Tasdiqlasangiz, birinchi yuborish hozir boshlanadi; keyingilari tanlangan intervalda davom etadi.",
           {
             reply_markup: {
@@ -996,11 +1027,11 @@ function registerUserScheduler(bot, options) {
       return { error: "Xabar matnini 1–4096 belgi oralig'ida sozlang." };
     }
     if (
-      !Number.isInteger(Number(schedule.intervalMinutes)) ||
-      schedule.intervalMinutes < MIN_INTERVAL_MINUTES ||
-      schedule.intervalMinutes > MAX_INTERVAL_MINUTES
+      !Number.isInteger(Number(schedule.intervalSeconds)) ||
+      schedule.intervalSeconds < MIN_INTERVAL_SECONDS ||
+      schedule.intervalSeconds > MAX_INTERVAL_SECONDS
     ) {
-      return { error: "Interval noto'g'ri. Eng qisqa interval — 01:00." };
+      return { error: "Interval noto'g'ri. Eng qisqa interval — 10 soniya." };
     }
     if (!schedule.chatIds.length) return { error: "Kamida bitta boshqariladigan chatni tanlang." };
     const allowed = await managedTargets();
@@ -1022,8 +1053,8 @@ function registerUserScheduler(bot, options) {
         if (!value || value.length > 4096) throw new Error("Matn 1–4096 belgi bo'lishi kerak.");
         await saveSchedule({ message: value, enabled: false, nextRunAt: null });
       } else if (mode.type === "interval") {
-        const intervalMinutes = parseInterval(value);
-        await saveSchedule({ intervalMinutes, enabled: false, nextRunAt: null });
+        const intervalSeconds = parseInterval(value);
+        await saveSchedule({ intervalSeconds, enabled: false, nextRunAt: null });
       }
       stopScheduler();
       inputModes.delete(ownerId);
@@ -1045,8 +1076,8 @@ function registerUserScheduler(bot, options) {
 }
 
 module.exports = Object.assign(registerUserScheduler, {
-  MAX_INTERVAL_MINUTES,
-  MIN_INTERVAL_MINUTES,
+  MAX_INTERVAL_SECONDS,
+  MIN_INTERVAL_SECONDS,
   buildMiniAppUrl,
   canPostToDialog,
   formatInterval,

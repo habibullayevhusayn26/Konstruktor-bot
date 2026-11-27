@@ -38,13 +38,15 @@ test("user scheduler is registered as a generated bot type", () => {
   assert.equal(typeof require("../bots/user-scheduler"), "function");
 });
 
-test("user scheduler interval enforces one hour to thirty days", () => {
-  assert.equal(parseInterval("01:00"), 60);
-  assert.equal(parseInterval("30:15"), 1815);
-  assert.equal(parseInterval("720:00"), 43_200);
-  assert.equal(formatInterval(90), "01:30");
-  assert.throws(() => parseInterval("00:59"), /01:00/);
-  assert.throws(() => parseInterval("720:01"), /30 kundan/);
+test("user scheduler interval supports ten seconds to thirty days", () => {
+  assert.equal(parseInterval("00:00:10"), 10);
+  assert.equal(parseInterval("00:01:30"), 90);
+  assert.equal(parseInterval("01:30"), 5_400);
+  assert.equal(parseInterval("720:00:00"), 2_592_000);
+  assert.equal(formatInterval(90), "00:01:30");
+  assert.equal(formatInterval(5_400), "01:30:00");
+  assert.throws(() => parseInterval("00:00:09"), /10 soniya/);
+  assert.throws(() => parseInterval("720:00:01"), /30 kundan/);
   assert.throws(() => parseInterval("1h"), /soat:daqiqa/);
 });
 
@@ -145,7 +147,11 @@ test("user scheduler panel only responds to its owner in a private chat", async 
   };
   bot.answerCallbackQuery = async (id, options) => callbackAnswers.push({ id, options });
   const runtime = registerUserScheduler(bot, {
-    doc: { _id: 123456, ownerId: 77 },
+    doc: {
+      _id: 123456,
+      ownerId: 77,
+      userSchedule: { intervalMinutes: 60 },
+    },
     Bots: { updateOne: async () => ({ matchedCount: 1 }) },
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
@@ -178,6 +184,7 @@ test("user scheduler panel only responds to its owner in a private chat", async 
   assert.equal(callbackAnswers.length, 1);
   assert.match(callbackAnswers[0].options.text, /bot egasi/);
   assert.match(replies[0].text, /USER BOT — BOSHQARUV PANELI/);
+  assert.match(replies[0].text, /Interval: 01:00:00/);
   assert.equal(replies[0].options.reply_markup.inline_keyboard[0][0].style, "primary");
   await runtime.stop();
 });

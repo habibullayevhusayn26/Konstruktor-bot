@@ -24,7 +24,11 @@ Serverda `TELEGRAM_API_ID` va `TELEGRAM_API_HASH` ni
 
 Panel faqat akkaunt egasi yoki admini bo'lgan guruh va kanallarni ko'rsatadi.
 Xabar, manzillar va intervalni tanlab, oldindan ko'rib, tasdiqlagandan keyin
-birinchi post darhol yuboriladi; keyingilari 01:00 dan 30 kungacha tanlangan
+birinchi post darhol yuboriladi; keyingilari 10 soniyadan 30 kungacha tanlangan
 intervalda takrorlanadi. **Jadvalni to'xtatish** keyingi yuborishlarni to'xtatadi;
 allaqachon yuborilayotgan xabar tugashi mumkin. Akkauntni uzish Telegram
 sessiyasini ham bekor qiladi.
+
+Intervalni `soat:daqiqa:soniya` formatida kiriting (masalan, `00:00:10`).
+Telegram tez-tez yuborishni cheklashi mumkin; 10 soniyalik oraliq qo'yilgan
+bo'lsa ham, Telegram tomonidan vaqtinchalik limit qo'llanishi ehtimoli bor.
