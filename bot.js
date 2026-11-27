@@ -142,7 +142,6 @@ async function buildChild(doc) {
     });
     await runtime.initialize();
     runtime.config = doc;
-    runtime.api = (method, payload) => runtime.bot.api.call(method, payload);
     const pathPrefix = publicUrl.pathname.replace(/\/+$/, "");
     runtime.webhookPath = `${pathPrefix}/webhook/guard/${doc._id}/${doc.webhookSecret}`;
     runtime.isWebhook = true;
@@ -193,11 +192,13 @@ async function startChild(doc) {
     });
     guardWebhooks.set(child.webhookPath, callback);
     try {
-      await child.api("setWebhook", {
-        url: `${new URL(PUBLIC_API_URL).origin}${child.webhookPath}`,
-        secret_token: doc.webhookSecret,
-        allowed_updates: ["message", "callback_query", "my_chat_member"],
-      });
+      await child.bot.api.setWebhook(
+        `${new URL(PUBLIC_API_URL).origin}${child.webhookPath}`,
+        {
+          secret_token: doc.webhookSecret,
+          allowed_updates: ["message", "callback_query", "my_chat_member"],
+        },
+      );
       children.set(doc._id, child);
     } catch (error) {
       guardWebhooks.delete(child.webhookPath);
@@ -238,7 +239,7 @@ function stopChild(id) {
   if (c) {
     if (c.webhookPath) {
       guardWebhooks.delete(c.webhookPath);
-      c.api("deleteWebhook").catch((error) => {
+      c.bot.api.deleteWebhook().catch((error) => {
         console.error(`@${c.config.username} webhook'ini o'chirib bo'lmadi:`, error.message);
       });
     }
