@@ -1,16 +1,20 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const { TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
-const QRCode = require("qrcode");
 
 const MIN_INTERVAL_MINUTES = 60;
 const MAX_INTERVAL_MINUTES = 30 * 24 * 60;
 const DIALOG_LIMIT = 500;
 const TARGETS_PER_PAGE = 8;
 const RUNNER_INTERVAL_MS = 15_000;
-const PASSWORD_TIMEOUT_MS = 2 * 60_000;
 const TARGET_SEND_DELAY_MS = 1_000;
+const LOGIN_TIMEOUT_MS = 8 * 60_000;
+const LOGIN_DATA_MAX_AGE_SECONDS = 10 * 60;
+const LOGIN_START_WINDOW_MS = 60 * 60_000;
+const MAX_LOGIN_STARTS_PER_HOUR = 5;
+const MAX_CREDENTIAL_ATTEMPTS = 5;
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
   intervalMinutes: MIN_INTERVAL_MINUTES,
@@ -56,17 +60,99 @@ function createTelegramClient(session, apiId, apiHash) {
   });
 }
 
+function httpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function buildMiniAppUrl(publicApiBaseUrl, botId) {
+  if (!publicApiBaseUrl) return null;
+  let url;
+  try {
+    url = new URL(publicApiBaseUrl);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) return null;
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/user-scheduler/app/${botId}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function validateWebAppInitData(initData, botToken, now = Date.now()) {
+  if (typeof initData !== "string" || initData.length > 16_384 || !botToken) {
+    throw httpError("Telegram Mini App tasdiqlash ma'lumoti yo'q yoki noto'g'ri.", 401);
+  }
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash") || "";
+  if (!/^[a-f0-9]{64}$/i.test(hash)) {
+    throw httpError("Telegram Mini App tasdiqlash ma'lumoti noto'g'ri.", 401);
+  }
+  const authDate = Number(params.get("auth_date"));
+  const nowSeconds = Math.floor(now / 1000);
+  if (
+    !Number.isSafeInteger(authDate) ||
+    authDate < nowSeconds - LOGIN_DATA_MAX_AGE_SECONDS ||
+    authDate > nowSeconds + 60
+  ) {
+    throw httpError("Mini App sessiyasi eskirgan. Ilovani qayta oching.", 401);
+  }
+
+  const dataCheckString = [...params.entries()]
+    .filter(([key]) => key !== "hash" && key !== "signature")
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  const expectedHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest();
+  const suppliedHash = Buffer.from(hash, "hex");
+  if (
+    suppliedHash.length !== expectedHash.length ||
+    !crypto.timingSafeEqual(suppliedHash, expectedHash)
+  ) {
+    throw httpError("Telegram Mini App tasdiqlash ma'lumoti noto'g'ri.", 401);
+  }
+
+  let user;
+  try {
+    user = JSON.parse(params.get("user") || "null");
+  } catch {
+    throw httpError("Telegram foydalanuvchisi ma'lumoti noto'g'ri.", 401);
+  }
+  if (!Number.isSafeInteger(user?.id)) {
+    throw httpError("Telegram foydalanuvchisi ma'lumoti noto'g'ri.", 401);
+  }
+  return user;
+}
+
 function registerUserScheduler(bot, options) {
-  const { doc, Bots, encryptSecret, decryptSecret } = options;
+  const {
+    doc,
+    Bots,
+    encryptSecret,
+    decryptSecret,
+    publicApiBaseUrl,
+  } = options;
   const ownerId = doc.ownerId;
   const apiId = Number(process.env.TELEGRAM_API_ID);
   const apiHash = process.env.TELEGRAM_API_HASH || "";
+  const miniAppUrl = buildMiniAppUrl(publicApiBaseUrl, doc._id);
   const inputModes = new Map();
+  const loginStarts = [];
   let userClient = null;
-  let activeLogin = null;
+  let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
   let sendCompletion = null;
+  let stopping = false;
 
   const isOwnerPrivateChat = (ctx) =>
     ctx.chat?.type === "private" && ctx.from?.id === ownerId;
@@ -101,13 +187,19 @@ function registerUserScheduler(bot, options) {
     const schedule = getSchedule();
     return {
       inline_keyboard: [
-        [{
-          text: userClient
-            ? `Akkaunt: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "ulangan"}`
-            : "Telegram akkauntni ulash",
-          callback_data: "userbot:connect",
-          style: userClient ? "success" : "primary",
-        }],
+        [userClient
+          ? {
+              text: `Akkaunt: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "ulangan"}`,
+              callback_data: "userbot:account",
+              style: "success",
+            }
+          : {
+              text: "Mini App orqali akkauntni ulash",
+              ...(miniAppUrl
+                ? { web_app: { url: miniAppUrl } }
+                : { callback_data: "userbot:connect" }),
+              style: "primary",
+            }],
         [{ text: "Guruh va kanallarni tanlash", callback_data: "userbot:chats", style: "primary" }],
         [{ text: "Xabar matnini sozlash", callback_data: "userbot:message", style: "primary" }],
         [{ text: "Takrorlanish intervali", callback_data: "userbot:interval", style: "primary" }],
@@ -323,7 +415,7 @@ function registerUserScheduler(bot, options) {
 
   function startScheduler() {
     stopScheduler();
-    if (!userClient || !getSchedule().enabled) return;
+    if (stopping || !userClient || !getSchedule().enabled) return;
     schedulerTimer = setInterval(() => {
       runDueSchedule().catch((error) => {
         console.error(`User scheduler ${doc._id} ishga tushmadi:`, error.message);
@@ -335,168 +427,317 @@ function registerUserScheduler(bot, options) {
     });
   }
 
-  async function cancelLogin() {
-    const login = activeLogin;
-    if (!login) return;
-    login.abortController.abort();
-    if (login.passwordWaiter) {
-      clearTimeout(login.passwordWaiter.timer);
-      login.passwordWaiter.reject(new Error("QR ulash bekor qilindi."));
-      login.passwordWaiter = null;
+  function getLoginStatus() {
+    if (!loginAttempt) {
+      return userClient
+        ? { phase: "connected", message: "Telegram akkaunt ulangan." }
+        : { phase: "idle", message: "Ulashga tayyor." };
     }
-    try {
-      await login.client.disconnect();
-    } catch (error) {
-      console.error(`User scheduler ${doc._id} vaqtinchalik ulanishni yopmadi:`, error.message);
-    }
-  }
-
-  async function removeQrMessage(login) {
-    if (!login.qrMessageId) return;
-    const messageId = login.qrMessageId;
-    login.qrMessageId = null;
-    try {
-      await bot.api("deleteMessage", { chat_id: ownerId, message_id: messageId });
-    } catch (error) {
-      console.error(`User scheduler ${doc._id} QR xabarini o'chirmadi:`, error.message);
-    }
-  }
-
-  async function requestTwoFactorPassword(login, hint) {
-    let waiter;
-    const passwordPromise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        login.passwordWaiter = null;
-        reject(new Error("2FA parolini kiritish vaqti tugadi."));
-      }, PASSWORD_TIMEOUT_MS);
-      timer.unref?.();
-      waiter = { resolve, reject, timer };
-      login.passwordWaiter = waiter;
-    });
-    passwordPromise.catch(() => {});
-    try {
-      await bot.sendMessage(
-        ownerId,
-        `Telegram ikki bosqichli parol so'radi${hint ? ` (ishora: ${hint})` : ""}.\n` +
-          "Parolni shu yerga yuborsangiz, xabar darhol o'chiriladi va parol saqlanmaydi. /cancel bilan bekor qiling.",
-      );
-    } catch (error) {
-      if (login.passwordWaiter === waiter) {
-        clearTimeout(waiter.timer);
-        login.passwordWaiter = null;
-        waiter.reject(error);
-      }
-      throw error;
-    }
-    return passwordPromise;
-  }
-
-  async function beginQrLogin() {
-    if (!Number.isSafeInteger(apiId) || apiId < 1 || !apiHash) {
-      await notifyOwner(
-        "Akkaunt ulash sozlanmagan. Server admini TELEGRAM_API_ID va TELEGRAM_API_HASH qiymatlarini sozlashi kerak.",
-      );
-      return;
-    }
-    if (userClient) {
-      await notifyOwner("Telegram akkauntingiz allaqachon ulangan.");
-      return;
-    }
-    if (activeLogin) {
-      await notifyOwner("QR orqali ulash jarayoni allaqachon ketmoqda.");
-      return;
-    }
-
-    stopScheduler();
-    await waitForSend();
-    const login = {
-      client: createTelegramClient("", apiId, apiHash),
-      abortController: new AbortController(),
-      qrMessageId: null,
-      passwordWaiter: null,
+    return {
+      phase: loginAttempt.phase,
+      message: loginAttempt.message,
+      deliveryType: loginAttempt.deliveryType,
+      codeLength: loginAttempt.codeLength,
+      passwordHint: loginAttempt.passwordHint,
+      emailPattern: loginAttempt.emailPattern,
     };
-    activeLogin = login;
-    let authenticated = false;
+  }
+
+  function waitForLoginInput(attempt, phase, message, details = {}) {
+    if (attempt.closed) throw new Error("Login jarayoni yopildi.");
+    attempt.phase = phase;
+    attempt.message = attempt.failureMessage || message;
+    attempt.failureMessage = "";
+    attempt.passwordHint = details.passwordHint || "";
+    attempt.emailPattern = details.emailPattern || "";
+    attempt.deliveryType = details.deliveryType || "";
+    attempt.codeLength = details.codeLength || 0;
+    return new Promise((resolve, reject) => {
+      attempt.waiter = { phase, resolve, reject };
+    });
+  }
+
+  function scheduleLoginAttemptCleanup(attempt) {
+    clearTimeout(attempt.cleanupTimer);
+    attempt.cleanupTimer = setTimeout(() => {
+      if (loginAttempt === attempt) loginAttempt = null;
+    }, 60_000);
+    attempt.cleanupTimer.unref?.();
+  }
+
+  async function closeLoginAttempt(attempt, phase, message) {
+    if (attempt.closed) return;
+    attempt.closed = true;
+    clearTimeout(attempt.timeout);
+    if (attempt.waiter) {
+      attempt.waiter.reject(new Error(message));
+      attempt.waiter = null;
+    }
+    attempt.phase = phase;
+    attempt.message = message;
+    if (phase !== "success") {
+      try {
+        await attempt.client.disconnect();
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} login ulanishi yopilmadi:`, error.name);
+      }
+    }
+    scheduleLoginAttemptCleanup(attempt);
+  }
+
+  async function cancelMiniAppLogin() {
+    if (loginAttempt?.completing) {
+      await loginAttempt.completion;
+      return false;
+    }
+    if (
+      !loginAttempt ||
+      ["success", "error", "cancelled"].includes(loginAttempt.phase)
+    ) {
+      return false;
+    }
+    await closeLoginAttempt(loginAttempt, "cancelled", "Akkaunt ulash bekor qilindi.");
+    return true;
+  }
+
+  function authErrorMessage(error) {
+    const code = error?.errorMessage || error?.code || "";
+    if (code === "PHONE_NUMBER_INVALID") return "Telefon raqami noto'g'ri formatda.";
+    if (code === "PHONE_NUMBER_BANNED") return "Telegram bu akkauntga login kod yuborishni rad etdi.";
+    if (code === "PHONE_CODE_EXPIRED") return "Login kodi eskirdi. Yangi urinish boshlang.";
+    if (code === "PHONE_NUMBER_FLOOD" || code === "FLOOD_WAIT") {
+      return "Telegram login urinishlarini vaqtincha chekladi. Keyinroq qayta urinib ko'ring.";
+    }
+    return "Telegram akkauntni ulash amalga oshmadi. Qaytadan urinib ko'ring.";
+  }
+
+  async function finishMiniAppLogin(attempt, me) {
+    if (attempt.closed) {
+      try {
+        await attempt.client.logOut();
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} bekor qilingan sessiyani bekor qila olmadi:`, error.name);
+      }
+      return;
+    }
+    attempt.completing = true;
+    clearTimeout(attempt.timeout);
     try {
-      await login.client.connect();
-      await login.client.signInUserWithQrCode(
-        { apiId, apiHash },
-        {
-          qrCode: async ({ token, expires }) => {
-            if (login.abortController.signal.aborted) return;
-            await removeQrMessage(login);
-            const link = `tg://login?token=${token.toString("base64url")}`;
-            const image = await QRCode.toBuffer(link, { width: 320, margin: 1 });
-            if (login.abortController.signal.aborted) return;
-            const expiryMinutes = Number.isFinite(Number(expires))
-              ? Math.max(1, Math.ceil((Number(expires) - Date.now() / 1000) / 60))
-              : null;
-            const sent = await bot.sendPhoto(ownerId, image, "telegram-login.png", {
-              caption:
-                "Telegram ilovasida Sozlamalar → Qurilmalar → Qurilmani ulash orqali QR kodni skanerlang.\n" +
-                (expiryMinutes ? `Kod ${expiryMinutes} daqiqada yangilanadi.` : "Kod tez orada yangilanadi."),
-              reply_markup: {
-                inline_keyboard: [[{
-                  text: "Ulashni bekor qilish",
-                  callback_data: "userbot:cancel-login",
-                  style: "danger",
-                }]],
-              },
-            });
-            login.qrMessageId = sent.message_id;
-            if (login.abortController.signal.aborted) await removeQrMessage(login);
-          },
-          password: (hint) => requestTwoFactorPassword(login, hint),
-          onError: (error) => {
-            console.error(`User scheduler ${doc._id} QR login xatosi:`, error.name);
-            return false;
-          },
-          abortSignal: login.abortController.signal,
-        },
-      );
-      const me = await login.client.getMe();
-      const encryptedSession = encryptSecret(login.client.session.save());
-      const userAccount = {
-        id: String(me.id),
-        username: me.username || "",
-      };
-      await Bots.updateOne(
+      const encryptedSession = encryptSecret(attempt.client.session.save());
+      const userAccount = { id: String(me.id), username: me.username || "" };
+      const result = await Bots.updateOne(
         { _id: doc._id, ownerId },
         { $set: { userSessionEncrypted: encryptedSession, userAccount } },
       );
-      if (userClient) {
-        await userClient.disconnect().catch((error) => {
-          console.error(`User scheduler ${doc._id} eski sessiyasini yopmadi:`, error.message);
-        });
+      if (result.matchedCount !== 1) {
+        throw new Error("User Bot bazada topilmadi.");
       }
-      userClient = login.client;
+      userClient = attempt.client;
       doc.userSessionEncrypted = encryptedSession;
       doc.userAccount = userAccount;
-      authenticated = true;
+      attempt.phase = "success";
+      attempt.message = "Akkaunt xavfsiz ulandi. Mini App’ni yopib, bot panelidan davom eting.";
+      attempt.closed = true;
       startScheduler();
-      await notifyOwner("Akkaunt xavfsiz ulandi. /start orqali guruh-kanallar va jadvalni sozlang.");
+      scheduleLoginAttemptCleanup(attempt);
     } catch (error) {
-      if (!login.abortController.signal.aborted) {
-        console.error(`User scheduler ${doc._id} akkaunt ulash xatosi:`, error.name);
-        await notifyOwner("Akkauntni ulab bo'lmadi. QR kodni yangilab qayta urinib ko'ring.");
-      }
-    } finally {
-      await removeQrMessage(login);
-      if (login.passwordWaiter) {
-        clearTimeout(login.passwordWaiter.timer);
-        login.passwordWaiter.reject(new Error("Akkaunt ulash tugadi."));
-        login.passwordWaiter = null;
-      }
-      if (!authenticated) {
-        try {
-          await login.client.disconnect();
-        } catch (error) {
-          console.error(`User scheduler ${doc._id} login ulanishi yopilmadi:`, error.message);
-        }
-        if (userClient && getSchedule().enabled) startScheduler();
-      }
-      if (activeLogin === login) activeLogin = null;
+      attempt.completing = false;
+      attempt.failureMessage = "Sessiyani saqlab bo'lmadi. Ulanish bekor qilindi.";
+      console.error(`User scheduler ${doc._id} sessiyasini saqlay olmadi:`, error.name);
+      await closeLoginAttempt(attempt, "error", attempt.failureMessage);
     }
+  }
+
+  async function failMiniAppLogin(attempt, error) {
+    if (attempt.closed) return;
+    const message = attempt.failureMessage || authErrorMessage(error);
+    console.error(`User scheduler ${doc._id} login xatosi:`, error?.name || "Error");
+    await closeLoginAttempt(attempt, "error", message);
+  }
+
+  function checkLoginRateLimit() {
+    const now = Date.now();
+    while (loginStarts.length && loginStarts[0] < now - LOGIN_START_WINDOW_MS) {
+      loginStarts.shift();
+    }
+    if (loginStarts.length >= MAX_LOGIN_STARTS_PER_HOUR) {
+      throw httpError("Login urinishlari ko'p. Birozdan keyin qayta urinib ko'ring.", 429);
+    }
+    if (loginStarts.length && now - loginStarts[loginStarts.length - 1] < 20_000) {
+      throw httpError("Yangi kod so'rashdan oldin biroz kuting.", 429);
+    }
+    loginStarts.push(now);
+  }
+
+  async function beginMiniAppLogin(phoneNumber) {
+    if (!Number.isSafeInteger(apiId) || apiId < 1 || !apiHash) {
+      throw httpError("Serverda TELEGRAM_API_ID va TELEGRAM_API_HASH sozlanmagan.", 503);
+    }
+    if (userClient) throw httpError("Telegram akkaunt allaqachon ulangan.", 409);
+    if (loginAttempt && !["error", "cancelled"].includes(loginAttempt.phase)) {
+      throw httpError("Login jarayoni allaqachon ketmoqda.", 409);
+    }
+    checkLoginRateLimit();
+    if (loginAttempt) {
+      clearTimeout(loginAttempt.cleanupTimer);
+      loginAttempt = null;
+    }
+    stopScheduler();
+    await waitForSend();
+
+    const attempt = {
+      client: createTelegramClient("", apiId, apiHash),
+      phase: "connecting",
+      message: "Telegram serveriga ulanmoqda...",
+      waiter: null,
+      closed: false,
+      completing: false,
+      failureMessage: "",
+      credentialAttempts: { code: 0, password: 0, email: 0, emailCode: 0 },
+      timeout: null,
+      cleanupTimer: null,
+      completion: null,
+      expiresAt: Date.now() + LOGIN_TIMEOUT_MS,
+    };
+    loginAttempt = attempt;
+    attempt.timeout = setTimeout(() => {
+      void closeLoginAttempt(attempt, "error", "Login vaqti tugadi. Qaytadan urinib ko'ring.");
+    }, LOGIN_TIMEOUT_MS);
+    attempt.timeout.unref?.();
+
+    try {
+      await attempt.client.connect();
+    } catch (error) {
+      await closeLoginAttempt(attempt, "error", "Telegram serveriga ulanish muvaffaqiyatsiz tugadi.");
+      throw httpError("Telegram serveriga ulanish muvaffaqiyatsiz tugadi.", 502);
+    }
+
+    try {
+      const authPromise = attempt.client.signInUser(
+        { apiId, apiHash },
+        {
+          phoneNumber,
+          phoneCode: (isCodeViaApp, info) =>
+            waitForLoginInput(
+              attempt,
+              "code",
+              "Telegram yuborgan login kodini kiriting.",
+              {
+                deliveryType: isCodeViaApp ? "app" : "sms",
+                codeLength: info?.length,
+              },
+            ),
+          password: (hint) =>
+            waitForLoginInput(
+              attempt,
+              "password",
+              "Telegram 2FA parolini kiriting.",
+              { passwordHint: hint },
+            ),
+          emailAddress: () =>
+            waitForLoginInput(attempt, "email", "Telegram login uchun email manzil so'radi."),
+          emailVerification: (emailOptions) =>
+            waitForLoginInput(
+              attempt,
+              "email-code",
+              "Emailga kelgan Telegram tasdiqlash kodini kiriting.",
+              { emailPattern: emailOptions.emailPattern },
+            ),
+          onError: (error) => {
+            const code = error?.errorMessage || "";
+            if (code === "PHONE_CODE_INVALID") {
+              attempt.failureMessage = "Login kodi noto'g'ri. Qaytadan kiriting.";
+              return false;
+            }
+            if (code === "PASSWORD_HASH_INVALID") {
+              attempt.failureMessage = "2FA paroli noto'g'ri. Qaytadan kiriting.";
+              return false;
+            }
+            if (code === "EMAIL_CODE_INVALID") {
+              attempt.failureMessage = "Email kodi noto'g'ri. Qaytadan kiriting.";
+              return false;
+            }
+            attempt.failureMessage = authErrorMessage(error);
+            return true;
+          },
+        },
+      );
+      authPromise.then(
+        (me) => {
+          attempt.completion = finishMiniAppLogin(attempt, me);
+          return attempt.completion;
+        },
+        (error) => failMiniAppLogin(attempt, error),
+      );
+    } catch (error) {
+      await failMiniAppLogin(attempt, error);
+    }
+    return getLoginStatus();
+  }
+
+  async function submitMiniAppCredential(phase, value) {
+    const attempt = loginAttempt;
+    if (!attempt || attempt.closed || attempt.phase !== phase || attempt.waiter?.phase !== phase) {
+      throw httpError("Bu bosqichda kiritish qabul qilinmaydi. Holatni yangilang.", 409);
+    }
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      (phase !== "password" && !value.trim()) ||
+      value.length > 512
+    ) {
+      throw httpError("Kiritilgan qiymat noto'g'ri.", 400);
+    }
+    const submittedValue = phase === "password" ? value : value.trim();
+    const attemptKey = phase === "email-code" ? "emailCode" : phase;
+    if (attempt.credentialAttempts[attemptKey] >= MAX_CREDENTIAL_ATTEMPTS) {
+      await closeLoginAttempt(attempt, "error", "Urinishlar limiti tugadi. Keyinroq urinib ko'ring.");
+      throw httpError("Urinishlar limiti tugadi. Keyinroq urinib ko'ring.", 429);
+    }
+    if (phase === "code" && !/^\d{3,12}$/.test(submittedValue)) {
+      throw httpError("Login kodi faqat raqamlardan iborat bo'lishi kerak.", 400);
+    }
+    if (phase === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(submittedValue)) {
+      throw httpError("Email manzil noto'g'ri formatda.", 400);
+    }
+    if (phase === "email-code" && !/^\d{3,12}$/.test(submittedValue)) {
+      throw httpError("Email kodi faqat raqamlardan iborat bo'lishi kerak.", 400);
+    }
+
+    const waiter = attempt.waiter;
+    attempt.waiter = null;
+    attempt.credentialAttempts[attemptKey]++;
+    attempt.phase = "processing";
+    attempt.message = "Tasdiqlanmoqda...";
+    waiter.resolve(submittedValue);
+    return getLoginStatus();
+  }
+
+  async function handleApiRequest(action, body) {
+    const webAppUser = validateWebAppInitData(body.initData, bot.token);
+    if (String(webAppUser.id) !== String(ownerId)) {
+      throw httpError("Mini App faqat bot egasi uchun.", 403);
+    }
+
+    if (action === "status") return getLoginStatus();
+    if (action === "cancel") {
+      await cancelMiniAppLogin();
+      return getLoginStatus();
+    }
+    if (action === "start") {
+      if (body.consent !== true) {
+        throw httpError("Akkaunt ulash roziligi tasdiqlanishi kerak.", 400);
+      }
+      const phoneNumber = typeof body.phoneNumber === "string" ? body.phoneNumber.trim() : "";
+      if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+        throw httpError("Telefon raqamini xalqaro formatda kiriting, masalan +998901234567.", 400);
+      }
+      return beginMiniAppLogin(phoneNumber);
+    }
+    if (["code", "password", "email", "email-code"].includes(action)) {
+      return submitMiniAppCredential(action, body.value);
+    }
+    throw httpError("Mini App so'rovi topilmadi.", 404);
   }
 
   async function start() {
@@ -543,9 +784,14 @@ function registerUserScheduler(bot, options) {
   }
 
   async function stopRuntime() {
+    stopping = true;
     stopScheduler();
     await waitForSend();
-    await cancelLogin();
+    await cancelMiniAppLogin();
+    if (loginAttempt?.phase === "success") {
+      clearTimeout(loginAttempt.cleanupTimer);
+      loginAttempt = null;
+    }
     if (userClient) {
       const client = userClient;
       userClient = null;
@@ -557,7 +803,8 @@ function registerUserScheduler(bot, options) {
     stopScheduler();
     await saveSchedule({ enabled: false, nextRunAt: null, chatIds: [] });
     await waitForSend();
-    await cancelLogin();
+    await cancelMiniAppLogin();
+    stopScheduler();
 
     let client = userClient;
     if (!client && doc.userSessionEncrypted) {
@@ -590,6 +837,10 @@ function registerUserScheduler(bot, options) {
     );
     delete doc.userSessionEncrypted;
     delete doc.userAccount;
+    if (loginAttempt?.phase === "success") {
+      clearTimeout(loginAttempt.cleanupTimer);
+      loginAttempt = null;
+    }
   }
 
   async function deleteRuntime() {
@@ -599,13 +850,13 @@ function registerUserScheduler(bot, options) {
 
   async function cancelPending() {
     const mode = inputModes.get(ownerId);
-    const hadPending = Boolean(mode || activeLogin);
+    const hadPending = Boolean(mode || (loginAttempt && !loginAttempt.closed));
     inputModes.delete(ownerId);
     if (mode) {
       clearTimeout(mode.timer);
       mode.reject?.(new Error("Kiritish bekor qilindi."));
     }
-    if (activeLogin) await cancelLogin();
+    if (loginAttempt && !loginAttempt.closed) await cancelMiniAppLogin();
     return hadPending;
   }
 
@@ -627,16 +878,14 @@ function registerUserScheduler(bot, options) {
       if (action === "panel") {
         await showPanel(ctx, true);
       } else if (action === "connect") {
-        void beginQrLogin().catch((error) => {
-          console.error(`User scheduler ${doc._id} QR ulash jarayoni xatosi:`, error.message);
-          notifyOwner("Akkaunt ulashni boshlashda xatolik yuz berdi. Keyinroq qayta urinib ko'ring.");
-        });
         await ctx.reply(
-          "Akkaunt ulash boshlandi. QR kodni Telegram ilovasidan skanerlang. QR kodni hech kimga yubormang.",
+          "Mini App uchun ommaviy HTTPS manzili kerak. Render’da RENDER_EXTERNAL_URL avtomatik ishlatiladi; boshqa hostingda PUBLIC_API_URL sozlang.",
         );
+      } else if (action === "account") {
+        await showPanel(ctx, false, "Telegram akkaunt allaqachon ulangan.");
       } else if (action === "cancel-login") {
-        await cancelLogin();
-        await ctx.reply("QR orqali akkaunt ulash bekor qilindi.");
+        await cancelMiniAppLogin();
+        await ctx.reply("Mini App orqali akkaunt ulash bekor qilindi.");
       } else if (action === "cancel-input") {
         inputModes.delete(ownerId);
         await showPanel(ctx, false, "Kiritish bekor qilindi.");
@@ -689,12 +938,12 @@ function registerUserScheduler(bot, options) {
             `Interval: ${formatInterval(schedule.intervalMinutes)}\n` +
             "Tasdiqlasangiz, birinchi yuborish hozir boshlanadi; keyingilari tanlangan intervalda davom etadi.",
           {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "Tasdiqlash va boshlash", callback_data: "userbot:activate", style: "success" }],
-              [{ text: "Panelga qaytish", callback_data: "userbot:panel", style: "primary" }],
-            ],
-          },
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "Tasdiqlash va boshlash", callback_data: "userbot:activate", style: "success" }],
+                [{ text: "Panelga qaytish", callback_data: "userbot:panel", style: "primary" }],
+              ],
+            },
           },
         );
       } else if (action === "activate") {
@@ -765,28 +1014,6 @@ function registerUserScheduler(bot, options) {
   bot.onText(/[\s\S]+/, async (ctx) => {
     if (!isOwnerPrivateChat(ctx)) return;
     if (typeof ctx.message?.text !== "string") return;
-    const login = activeLogin;
-    if (login?.passwordWaiter) {
-      const waiter = login.passwordWaiter;
-      try {
-        await ctx.api("deleteMessage", {
-          chat_id: ctx.chat.id,
-          message_id: ctx.message.message_id,
-        });
-      } catch (error) {
-        clearTimeout(waiter.timer);
-        login.passwordWaiter = null;
-        waiter.reject(new Error("2FA parol xabarini chatdan xavfsiz o'chirib bo'lmadi."));
-        console.error(`User scheduler ${doc._id} parol xabarini o'chira olmadi:`, error.message);
-        await ctx.reply("Xabarni o'chira olmadim, akkaunt ulash bekor qilindi. Xabarni qo'lda o'chiring.");
-        return;
-      }
-      clearTimeout(waiter.timer);
-      login.passwordWaiter = null;
-      waiter.resolve(ctx.text);
-      return;
-    }
-
     const mode = inputModes.get(ownerId);
     if (!mode) return;
     const value = ctx.text.trim();
@@ -810,17 +1037,20 @@ function registerUserScheduler(bot, options) {
     start,
     delete: deleteRuntime,
     cancelPending,
+    handleApiRequest,
     async stop() {
       await stopRuntime();
     },
   };
 }
 
-module.exports = {
+module.exports = Object.assign(registerUserScheduler, {
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
+  buildMiniAppUrl,
   canPostToDialog,
   formatInterval,
   parseInterval,
   registerUserScheduler,
-};
+  validateWebAppInitData,
+});

@@ -44,7 +44,7 @@ const BOT_TYPES = Object.freeze({
   },
   "user-scheduler": {
     label: "User Bot — rejalashtirilgan postlar",
-    description: "Telegram akkauntingizni QR orqali ulang va admin/egasi bo'lgan guruh-kanallaringizga postlarni jadval bilan yuboring.",
+    description: "Telegram akkauntingizni Mini App orqali ulang va admin/egasi bo'lgan guruh-kanallaringizga postlarni jadval bilan yuboring.",
     module: "user-scheduler",
   },
 });

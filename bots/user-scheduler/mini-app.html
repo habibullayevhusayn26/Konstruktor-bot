@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>Telegram akkauntni ulash</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--tg-theme-bg-color, #f3f5f8);
+        color: var(--tg-theme-text-color, #18212f);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
+      main {
+        width: min(100%, 460px);
+        margin: 0 auto;
+        padding: 22px;
+        border-radius: 20px;
+        background: var(--tg-theme-secondary-bg-color, #fff);
+        box-shadow: 0 10px 32px rgb(22 34 51 / 8%);
+      }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { line-height: 1.5; }
+      .muted { color: var(--tg-theme-hint-color, #65758b); font-size: 14px; }
+      .status { min-height: 24px; margin: 12px 0; color: var(--tg-theme-link-color, #2481cc); }
+      label { display: block; margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+      input[type="tel"], input[type="text"], input[type="email"], input[type="password"] {
+        width: 100%;
+        min-height: 48px;
+        padding: 12px;
+        border: 1px solid var(--tg-theme-hint-color, #b8c2ce);
+        border-radius: 12px;
+        background: var(--tg-theme-bg-color, #fff);
+        color: var(--tg-theme-text-color, #18212f);
+        font: inherit;
+        font-size: 16px;
+      }
+      .consent {
+        display: grid;
+        grid-template-columns: 22px 1fr;
+        gap: 10px;
+        align-items: start;
+        margin: 16px 0;
+        font-size: 13px;
+        line-height: 1.45;
+        font-weight: 400;
+      }
+      .consent input { width: 18px; height: 18px; margin: 2px 0 0; }
+      button {
+        width: 100%;
+        min-height: 48px;
+        margin-top: 12px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--tg-theme-button-color, #2481cc);
+        color: var(--tg-theme-button-text-color, #fff);
+        font: inherit;
+        font-weight: 700;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--tg-theme-link-color, #2481cc);
+        border: 1px solid var(--tg-theme-hint-color, #b8c2ce);
+      }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Telegram akkauntni ulash</h1>
+      <p class="muted">Faqat o'zingizga tegishli akkauntni ulang. Tasdiqlash kodi Telegram tomonidan yuboriladi.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Mini App tekshirilmoqda...</p>
+
+      <form id="phone-form" hidden>
+        <label for="phone">Telefon raqami</label>
+        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+998901234567" required>
+        <label class="consent">
+          <input id="consent" type="checkbox" required>
+          <span>Bu mening akkauntim. Telegram yuborgan login kodi va zarur bo'lsa 2FA paroli ushbu Mini App orqali serverga yuboriladi. Ulangan sessiya shifrlanib saqlanishiga roziman.</span>
+        </label>
+        <button type="submit">Tasdiqlash kodini olish</button>
+      </form>
+
+      <form id="code-form" hidden>
+        <label for="code">Telegram login kodi</label>
+        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" required>
+        <p class="muted">Kod Telegram ilovasidagi rasmiy xabarda yoki SMS orqali kelishi mumkin. Uni boshqa hech kimga bermang.</p>
+        <button type="submit">Kodni tasdiqlash</button>
+      </form>
+
+      <form id="password-form" hidden>
+        <label for="password">Ikki bosqichli tasdiqlash paroli</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <p id="password-hint" class="muted"></p>
+        <button type="submit">Parolni tasdiqlash</button>
+      </form>
+
+      <form id="email-form" hidden>
+        <label for="email">Telegram akkaunt emaili</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+        <button type="submit">Emailni yuborish</button>
+      </form>
+
+      <form id="email-code-form" hidden>
+        <label for="email-code">Email tasdiqlash kodi</label>
+        <input id="email-code" name="email-code" type="text" inputmode="numeric" autocomplete="one-time-code" required>
+        <p id="email-hint" class="muted"></p>
+        <button type="submit">Email kodini tasdiqlash</button>
+      </form>
+
+      <button id="cancel" class="secondary" type="button" hidden>Ulashni bekor qilish</button>
+    </main>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="../mini-app.js"></script>
+  </body>
+</html>

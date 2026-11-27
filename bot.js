@@ -4,6 +4,8 @@
 require("dotenv").config();
 
 const http = require("node:http");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const crypto = require("node:crypto");
 const { ObjectId } = require("mongodb");
 const { webhookCallback } = require("grammy");
@@ -38,6 +40,14 @@ const {
 } = process.env;
 const PUBLIC_API_URL =
   process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || "";
+const PUBLIC_PATH_PREFIX = (() => {
+  try {
+    const pathname = new URL(PUBLIC_API_URL).pathname.replace(/\/+$/, "");
+    return pathname === "/" ? "" : pathname;
+  } catch {
+    return "";
+  }
+})();
 const ADMIN_IDS = (process.env.ADMIN_IDS || "")
   .split(",")
   .map((s) => Number(s.trim()))
@@ -173,6 +183,9 @@ async function buildChild(doc) {
   child.templateControls = templateControls;
   if (typeof templateControls?.handleApiRequest === "function") {
     child.handleSmmApiRequest = templateControls.handleApiRequest;
+  }
+  if (typeof templateControls?.handleApiRequest === "function" && doc.type === "user-scheduler") {
+    child.handleUserSchedulerApiRequest = templateControls.handleApiRequest;
   }
   registerSubscriptionGate(child, { doc, Subs });
   registerAdminPanel(child, {
@@ -402,9 +415,44 @@ async function readSmmApiBody(request) {
   }
 }
 
+async function readUserSchedulerApiBody(request) {
+  const contentType = String(request.headers["content-type"] || "")
+    .split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    const error = new Error("Content-Type application/json bo'lishi kerak.");
+    error.statusCode = 415;
+    throw error;
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 16 * 1024) {
+      const error = new Error("So'rov hajmi juda katta.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  try {
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Object expected.");
+    }
+    return body;
+  } catch {
+    const error = new Error("So'rov tanasi noto'g'ri formatda.");
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
 async function startHealthServer(mother) {
   const server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    const routePath = PUBLIC_PATH_PREFIX && pathname.startsWith(`${PUBLIC_PATH_PREFIX}/`)
+      ? pathname.slice(PUBLIC_PATH_PREFIX.length)
+      : pathname;
     const guardWebhook = guardWebhooks.get(pathname);
     if (guardWebhook) {
       if (request.method !== "POST") {
@@ -420,6 +468,103 @@ async function startHealthServer(mother) {
           response.writeHead(500);
           response.end("Webhook update bajarilmadi.");
         }
+      }
+      return;
+    }
+
+    if (routePath === "/user-scheduler/mini-app.js") {
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      try {
+        const script = await fs.readFile(
+          path.join(__dirname, "bots", "user-scheduler", "mini-app.js"),
+        );
+        response.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+          "Content-Security-Policy": "default-src 'self'; script-src 'self' https://telegram.org; connect-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'",
+        });
+        response.end(script);
+      } catch (error) {
+        console.error("User Bot Mini App skriptini o'qib bo'lmadi:", error.message);
+        response.writeHead(500);
+        response.end("Mini App fayli mavjud emas.");
+      }
+      return;
+    }
+
+    const miniAppMatch = routePath.match(/^\/user-scheduler\/app\/(\d+)$/);
+    if (miniAppMatch) {
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      try {
+        const page = await fs.readFile(
+          path.join(__dirname, "bots", "user-scheduler", "mini-app.html"),
+        );
+        response.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+          "Content-Security-Policy": "default-src 'self'; script-src 'self' https://telegram.org; connect-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'",
+        });
+        response.end(page);
+      } catch (error) {
+        console.error("User Bot Mini App sahifasini o'qib bo'lmadi:", error.message);
+        response.writeHead(500);
+        response.end("Mini App sahifasi mavjud emas.");
+      }
+      return;
+    }
+
+    const userLoginMatch = routePath.match(
+      /^\/user-scheduler\/api\/(\d+)\/(status|start|code|password|email|email-code|cancel)$/,
+    );
+    if (userLoginMatch) {
+      if (request.method !== "POST") {
+        response.writeHead(405, { Allow: "POST" });
+        response.end();
+        return;
+      }
+      const child = children.get(Number(userLoginMatch[1]));
+      if (typeof child?.handleUserSchedulerApiRequest !== "function") {
+        response.writeHead(404, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        response.end(JSON.stringify({ error: "User Bot topilmadi yoki ishlamayapti." }));
+        return;
+      }
+      try {
+        const body = await readUserSchedulerApiBody(request);
+        const result = await child.handleUserSchedulerApiRequest(userLoginMatch[2], body);
+        response.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+        });
+        response.end(JSON.stringify(result));
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        if (statusCode >= 500) {
+          console.error("User Bot Mini App API xatosi:", error.name);
+        }
+        response.writeHead(statusCode, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+        });
+        response.end(JSON.stringify({
+          error: error.statusCode ? error.message : "Ichki server xatosi.",
+        }));
       }
       return;
     }
@@ -2191,7 +2336,7 @@ async function main() {
                       : doc.type === "guard"
                         ? "✅ Telegram Qorovul Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botni guruhga qo'shib administrator qiling va guruh egasi /claim buyrug'ini yuborsin."
                         : doc.type === "user-scheduler"
-                          ? "✅ User Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botda /start yuborib Telegram akkauntingizni QR orqali ulang."
+                          ? "✅ User Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botda /start yuborib, Mini App orqali Telegram akkauntingizni ulang."
                         : "✅ Tayyor bot yaratildi. 3 kunlik bepul sinov boshlandi. Sozlash shart emas.",
             );
             await ctx.reply(
