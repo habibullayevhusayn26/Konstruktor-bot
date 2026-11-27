@@ -175,6 +175,7 @@ function registerUserSchedulerSession(bot, options) {
   const loginStarts = [];
   let userClient = null;
   let sourceBotPeer = null;
+  let footerUsername = String(doc.username || "").replace(/^@/, "");
   let chatPickerActive = false;
   let pendingAlbum = null;
   const mtprotoMessageRefs = new Map();
@@ -586,7 +587,18 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   function buildAutoFooter() {
-    return makeAutoFooter(doc.username);
+    return makeAutoFooter(footerUsername);
+  }
+
+  async function refreshFooterUsername() {
+    if (footerUsername) return footerUsername;
+    try {
+      const botInfo = await bot.api("getMe");
+      footerUsername = String(botInfo?.username || "").replace(/^@/, "");
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} bot username aniqlanmadi:`, error.message);
+    }
+    return footerUsername;
   }
 
   function appendAutoFooter(text) {
@@ -728,6 +740,7 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   async function sendScheduledMessage(target, schedule) {
+    await refreshFooterUsername();
     if (!isValidMessageRef(schedule.messageRef)) {
       return userClient.sendMessage(
         target,
@@ -870,6 +883,17 @@ function registerUserSchedulerSession(bot, options) {
             `User scheduler ${doc._id} media izohiga footer qo'shib bo'lmadi:`,
             error?.message || error?.errorMessage || error?.name,
           );
+          const footerText = makeAutoFooter(footerUsername).replace(/^\n\n/, "");
+          if (footerText) {
+            await userClient.sendMessage(target, {
+              message: footerText,
+            }).catch((fallbackError) => {
+              console.error(
+                `User scheduler ${doc._id} media footerini alohida yubora olmadi:`,
+                fallbackError?.message || fallbackError?.errorMessage || fallbackError?.name,
+              );
+            });
+          }
         }
       }
     }
@@ -1294,6 +1318,14 @@ function registerUserSchedulerSession(bot, options) {
       attachMtprotoSourceListener();
       doc.userSessionEncrypted = encryptedSession;
       doc.userAccount = userAccount;
+      if (!footerUsername) {
+        try {
+          const botInfo = await bot.api("getMe");
+          footerUsername = String(botInfo?.username || "").replace(/^@/, "");
+        } catch (error) {
+          console.error(`User scheduler ${doc._id} bot username topilmadi:`, error.message);
+        }
+      }
       await ensureRequiredSubscriptions();
       attempt.phase = "success";
       attempt.message = "Akkaunt xavfsiz ulandi. Mini App’ni yopib, bot panelidan davom eting.";
@@ -1531,6 +1563,14 @@ function registerUserSchedulerSession(bot, options) {
       sourceBotPeer = null;
       attachMtprotoSourceListener();
       doc.userAccount = { id: String(me.id), username: me.username || "" };
+      if (!footerUsername) {
+        try {
+          const botInfo = await bot.api("getMe");
+          footerUsername = String(botInfo?.username || "").replace(/^@/, "");
+        } catch (error) {
+          console.error(`User scheduler ${doc._id} bot username topilmadi:`, error.message);
+        }
+      }
       await ensureRequiredSubscriptions();
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
