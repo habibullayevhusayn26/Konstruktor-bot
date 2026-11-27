@@ -222,6 +222,255 @@ test("user scheduler cancel hook clears a pending message input", async () => {
   });
 
   assert.equal(updates, 0);
-  assert.match(replies[0].text, /Takror yuboriladigan matn/);
+  assert.match(replies[0].text, /Takror yuboriladigan xabar/);
   await runtime.stop();
+});
+
+test("user scheduler stores media and forwarding details from the submitted Telegram message", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const doc = { _id: 123456, ownerId: 77 };
+  bot.sendMessage = async (chatId, text, options) => {
+    replies.push({ chatId, text, options });
+  };
+  bot.answerCallbackQuery = async () => ({});
+  const runtime = registerUserScheduler(bot, {
+    doc,
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+  });
+  const owner = { id: 77 };
+  const privateChat = { id: 77, type: "private" };
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "message-mode",
+      from: owner,
+      message: { chat: privateChat, message_id: 1 },
+      data: "userbot:message",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 23,
+      chat: privateChat,
+      from: owner,
+      photo: [{ file_id: "photo" }],
+      caption: "caption",
+      forward_origin: { type: "user", sender_user: { id: 99 } },
+    },
+  });
+
+  assert.deepEqual(doc.userSchedule.messageRef, {
+    messageIds: [23],
+    forwarded: true,
+    description: "rasm",
+  });
+  assert.equal(doc.userSchedule.message, "");
+  assert.match(replies[1].text, /Xabar jadval uchun saqlandi/);
+  await runtime.stop();
+});
+
+test("user scheduler collects media album messages before saving the reference", async () => {
+  const bot = new BotConstructor("test-token");
+  const doc = { _id: 123456, ownerId: 77 };
+  bot.sendMessage = async () => ({});
+  bot.answerCallbackQuery = async () => ({});
+  const runtime = registerUserScheduler(bot, {
+    doc,
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+  });
+  const owner = { id: 77 };
+  const privateChat = { id: 77, type: "private" };
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "album-mode",
+      from: owner,
+      message: { chat: privateChat, message_id: 1 },
+      data: "userbot:message",
+    },
+  });
+  for (const messageId of [30, 31]) {
+    await bot.processUpdate({
+      message: {
+        message_id: messageId,
+        media_group_id: "album-1",
+        chat: privateChat,
+        from: owner,
+        photo: [{ file_id: `photo-${messageId}` }],
+      },
+    });
+  }
+  await runtime.stop();
+
+  assert.deepEqual(doc.userSchedule.messageRef.messageIds, [30, 31]);
+  assert.equal(doc.userSchedule.messageRef.description, "rasm");
+});
+
+test("native chat picker accepts a shared group outside the recent dialog list", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    userSessionEncrypted: "encrypted-session",
+    userAccount: { id: "77" },
+  };
+  const group = { className: "Chat", title: "Shared group" };
+  const client = {
+    connect: async () => {},
+    checkAuthorization: async () => true,
+    getMe: async () => ({ id: 77, username: "owner" }),
+    getDialogs: async () => [],
+    getEntity: async (id) => {
+      assert.equal(String(id), "-100777");
+      return group;
+    },
+    getPeerId: async () => "peer-777",
+    disconnect: async () => {},
+  };
+  bot.sendMessage = async (chatId, text, options) => {
+    replies.push({ chatId, text, options });
+  };
+  bot.answerCallbackQuery = async () => ({});
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+  const runtime = registerUserScheduler(bot, {
+    doc,
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+    createTelegramClient: () => client,
+  });
+
+  try {
+    await runtime.start();
+    await bot.processUpdate({
+      callback_query: {
+        id: "select-chat",
+        from: { id: 77 },
+        message: { chat: { id: 77, type: "private" }, message_id: 1 },
+        data: "userbot:chats",
+      },
+    });
+    const keyboard = replies[0].options.reply_markup.keyboard;
+    assert.ok(keyboard[0][0].request_chat);
+    assert.ok(keyboard[0][1].request_chat);
+    assert.equal(keyboard[0][0].request_chat.chat_is_channel, false);
+    assert.equal(keyboard[0][1].request_chat.chat_is_channel, true);
+
+    await bot.processUpdate({
+      message: {
+        message_id: 2,
+        chat: { id: 77, type: "private" },
+        from: { id: 77 },
+        chat_shared: {
+          request_id: keyboard[0][0].request_chat.request_id,
+          chat_id: -100777,
+          title: "Shared group",
+        },
+      },
+    });
+    assert.deepEqual(doc.userSchedule.chatIds, ["peer-777"]);
+    assert.match(replies[1].text, /Chat jadvalga qo'shildi/);
+  } finally {
+    await runtime.stop();
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
+});
+
+test("scheduled messages copy owner forwards and preserve third-party forwards", async (t) => {
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+
+  try {
+    for (const forwarded of [false, true]) {
+      await t.test(forwarded ? "third-party forward" : "owner-authored forward", async () => {
+        const bot = new BotConstructor("test-token");
+        const doc = {
+          _id: 123456,
+          ownerId: 77,
+          username: "test_user_bot",
+          userSessionEncrypted: "encrypted-session",
+          userAccount: { id: "77" },
+          userSchedule: {
+            message: "",
+            messageRef: { messageIds: [42], forwarded, description: "video" },
+            intervalSeconds: 10,
+            chatIds: ["peer-1"],
+            enabled: true,
+            nextRunAt: new Date(Date.now() - 1_000),
+          },
+        };
+        let sendResolve;
+        let sendTimer;
+        const sendCalled = new Promise((resolve, reject) => {
+          sendResolve = resolve;
+          sendTimer = setTimeout(() => reject(new Error("Scheduled send timed out")), 2_000);
+        });
+        const calls = [];
+        const groupEntity = { className: "Chat", title: "Group" };
+        const client = {
+          connect: async () => {},
+          checkAuthorization: async () => true,
+          getMe: async () => ({ id: 77, username: "owner" }),
+          getDialogs: async () => [{ isGroup: true, title: "Group", entity: groupEntity }],
+          getEntity: async () => ({ className: "User", username: "test_user_bot" }),
+          getPeerId: async () => "peer-1",
+          copyMessages: async (...args) => {
+            calls.push({ method: "copy", args });
+            clearTimeout(sendTimer);
+            sendResolve();
+            return [{ id: 1 }];
+          },
+          forwardMessages: async (...args) => {
+            calls.push({ method: "forward", args });
+            clearTimeout(sendTimer);
+            sendResolve();
+            return [{ id: 1 }];
+          },
+          disconnect: async () => {},
+        };
+        bot.sendMessage = async () => ({});
+        const runtime = registerUserScheduler(bot, {
+          doc,
+          Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+          encryptSecret: (value) => value,
+          decryptSecret: (value) => value,
+          createTelegramClient: () => client,
+        });
+
+        try {
+          await runtime.start();
+          await sendCalled;
+          assert.equal(calls.length, 1);
+          assert.equal(calls[0].method, forwarded ? "forward" : "copy");
+          assert.deepEqual(calls[0].args[1], {
+            messages: [42],
+            fromPeer: { className: "User", username: "test_user_bot" },
+          });
+        } finally {
+          clearTimeout(sendTimer);
+          await runtime.stop();
+        }
+      });
+    }
+  } finally {
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
 });

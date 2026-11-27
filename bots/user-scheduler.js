@@ -14,6 +14,7 @@ const LOGIN_DATA_MAX_AGE_SECONDS = 10 * 60;
 const LOGIN_START_WINDOW_MS = 60 * 60_000;
 const MAX_LOGIN_STARTS_PER_HOUR = 5;
 const MAX_CREDENTIAL_ATTEMPTS = 5;
+const ALBUM_CAPTURE_DELAY_MS = 750;
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
   intervalSeconds: MIN_INTERVAL_SECONDS,
@@ -146,6 +147,7 @@ function registerUserScheduler(bot, options) {
     decryptSecret,
     publicApiBaseUrl,
   } = options;
+  const makeTelegramClient = options.createTelegramClient || createTelegramClient;
   const ownerId = doc.ownerId;
   const apiId = Number(process.env.TELEGRAM_API_ID);
   const apiHash = process.env.TELEGRAM_API_HASH || "";
@@ -156,6 +158,7 @@ function registerUserScheduler(bot, options) {
   let userClient = null;
   let sourceBotPeer = null;
   let chatPickerActive = false;
+  let pendingAlbum = null;
   let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
@@ -184,10 +187,13 @@ function registerUserScheduler(bot, options) {
 
   async function saveSchedule(changes) {
     const userSchedule = { ...getSchedule(), ...changes };
-    await Bots.updateOne(
+    const result = await Bots.updateOne(
       { _id: doc._id, ownerId },
       { $set: { userSchedule } },
     );
+    if (result?.matchedCount !== 1) {
+      throw new Error("User Bot bazada topilmadi yoki jadval saqlanmadi.");
+    }
     doc.userSchedule = userSchedule;
     return userSchedule;
   }
@@ -278,6 +284,41 @@ function registerUserScheduler(bot, options) {
       });
     }
     return targets;
+  }
+
+  async function resolveTarget(peerId) {
+    const entity = await userClient.getEntity(peerId);
+    if (!entity || entity.left || entity.kicked) return null;
+    const kind = entity.broadcast
+      ? "channels"
+      : entity.megagroup || entity.className === "Chat"
+        ? "groups"
+        : null;
+    if (!kind) return null;
+    const resolvedPeerId = String(await userClient.getPeerId(entity, true));
+    return {
+      peerId: resolvedPeerId,
+      title: entity.title || "Nomsiz chat",
+      kind,
+      dialog: {
+        entity,
+        title: entity.title,
+        isGroup: kind === "groups" && entity.className === "Chat",
+        isChannel: entity.className === "Channel",
+      },
+    };
+  }
+
+  async function resolveSelectedTargets(selectedIds) {
+    const targets = await availableTargets();
+    const byId = new Map(targets.map((target) => [target.peerId, target]));
+    const resolved = [];
+    for (const id of selectedIds) {
+      let target = byId.get(id);
+      if (!target) target = await resolveTarget(id);
+      if (target) resolved.push(target);
+    }
+    return resolved;
   }
 
   function clearChatShareRequests() {
@@ -380,10 +421,16 @@ function registerUserScheduler(bot, options) {
       messages: schedule.messageRef.messageIds,
       fromPeer: await getSourceBotPeer(),
     };
-    if (schedule.messageRef.forwarded) {
-      return userClient.forwardMessages(target, params);
+    const sent = schedule.messageRef.forwarded
+      ? await userClient.forwardMessages(target, params)
+      : await userClient.copyMessages(target, params);
+    if (
+      !Array.isArray(sent) ||
+      sent.length !== schedule.messageRef.messageIds.length ||
+      sent.some((message) => !message)
+    ) {
+      throw new Error("Telegram barcha tanlangan xabarlarni yuborganini tasdiqlamadi.");
     }
-    return userClient.copyMessages(target, params);
   }
 
   async function handleSharedChat(ctx, shared) {
@@ -406,9 +453,9 @@ function registerUserScheduler(bot, options) {
     }
 
     let target;
-    let targets;
     try {
-      targets = await availableTargets(request.kind);
+      const targets = await availableTargets(request.kind);
+      target = targets.find((item) => item.peerId === String(shared.chat_id));
     } catch (error) {
       console.error(`User scheduler ${doc._id} chatlar ro'yxatini ololmadi:`, error.message);
       await ctx.reply("Chatlar ro'yxatini olish muvaffaqiyatsiz tugadi. Qayta urinib ko'ring.", {
@@ -416,12 +463,10 @@ function registerUserScheduler(bot, options) {
       });
       return;
     }
-    target = targets.find((item) => item.peerId === String(shared.chat_id));
     if (!target) {
       try {
-        const entity = await userClient.getEntity(shared.chat_id);
-        const peerId = String(await userClient.getPeerId(entity, true));
-        target = targets.find((item) => item.peerId === peerId);
+        target = await resolveTarget(shared.chat_id);
+        if (target?.kind !== request.kind) target = null;
       } catch (error) {
         console.error(`User scheduler ${doc._id} tanlangan chatni aniqlay olmadi:`, error.message);
       }
@@ -437,11 +482,19 @@ function registerUserScheduler(bot, options) {
     const wasSelected = selected.has(target.peerId);
     if (wasSelected) selected.delete(target.peerId);
     else selected.add(target.peerId);
-    await saveSchedule({
-      chatIds: [...selected],
-      enabled: false,
-      nextRunAt: null,
-    });
+    try {
+      await saveSchedule({
+        chatIds: [...selected],
+        enabled: false,
+        nextRunAt: null,
+      });
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} tanlangan chatni saqlay olmadi:`, error.message);
+      await ctx.reply("Tanlangan chat jadvalga saqlanmadi. Qaytadan urinib ko'ring.", {
+        reply_markup: chatPickerKeyboard(),
+      });
+      return;
+    }
     stopScheduler();
     await ctx.reply(
       `${wasSelected ? "Chat ro'yxatdan chiqarildi" : "Chat jadvalga qo'shildi"}: ${shared.title || target.title}`,
@@ -509,11 +562,10 @@ function registerUserScheduler(bot, options) {
         nextRunAt: new Date(Date.now() + intervalSeconds * 1_000),
       });
 
-      const allowed = await availableTargets();
-      const byId = new Map(allowed.map((target) => [target.peerId, target]));
       const selectedIds = getSchedule().chatIds;
-      const targets = selectedIds.map((id) => byId.get(id)).filter(Boolean);
-      const removedIds = selectedIds.filter((id) => !byId.has(id));
+      const targets = await resolveSelectedTargets(selectedIds);
+      const resolvedIds = new Set(targets.map((target) => target.peerId));
+      const removedIds = selectedIds.filter((id) => !resolvedIds.has(id));
       if (removedIds.length) {
         await saveSchedule({
           chatIds: targets.map((target) => target.peerId),
@@ -706,6 +758,7 @@ function registerUserScheduler(bot, options) {
         throw new Error("User Bot bazada topilmadi.");
       }
       userClient = attempt.client;
+      sourceBotPeer = null;
       doc.userSessionEncrypted = encryptedSession;
       doc.userAccount = userAccount;
       attempt.phase = "success";
@@ -759,7 +812,7 @@ function registerUserScheduler(bot, options) {
     await waitForSend();
 
     const attempt = {
-      client: createTelegramClient("", apiId, apiHash),
+      client: makeTelegramClient("", apiId, apiHash),
       phase: "connecting",
       message: "Telegram serveriga ulanmoqda...",
       waiter: null,
@@ -922,7 +975,7 @@ function registerUserScheduler(bot, options) {
     }
     let client;
     try {
-      client = createTelegramClient(decryptSecret(doc.userSessionEncrypted), apiId, apiHash);
+      client = makeTelegramClient(decryptSecret(doc.userSessionEncrypted), apiId, apiHash);
       try {
         await client.connect();
       } catch (error) {
@@ -941,6 +994,7 @@ function registerUserScheduler(bot, options) {
         throw new Error("Saqlangan Telegram akkaunti mos kelmadi.");
       }
       userClient = client;
+      sourceBotPeer = null;
       doc.userAccount = { id: String(me.id), username: me.username || "" };
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
@@ -960,14 +1014,18 @@ function registerUserScheduler(bot, options) {
     stopping = true;
     stopScheduler();
     await waitForSend();
+    if (pendingAlbum) await flushPendingAlbum(false);
     await cancelMiniAppLogin();
     if (loginAttempt?.phase === "success") {
       clearTimeout(loginAttempt.cleanupTimer);
       loginAttempt = null;
     }
+    clearChatShareRequests();
+    chatPickerActive = false;
     if (userClient) {
       const client = userClient;
       userClient = null;
+      sourceBotPeer = null;
       await client.disconnect();
     }
   }
@@ -986,7 +1044,7 @@ function registerUserScheduler(bot, options) {
           "Akkaunt sessiyasini bekor qilish uchun serverda TELEGRAM_API_ID va TELEGRAM_API_HASH kerak.",
         );
       }
-      client = createTelegramClient(decryptSecret(doc.userSessionEncrypted), apiId, apiHash);
+      client = makeTelegramClient(decryptSecret(doc.userSessionEncrypted), apiId, apiHash);
       await client.connect();
     }
     if (client) {
@@ -998,11 +1056,13 @@ function registerUserScheduler(bot, options) {
           console.error(`User scheduler ${doc._id} sessiyasini uzib bo'lmadi:`, disconnectError.message);
         });
         userClient = null;
+        sourceBotPeer = null;
         throw new Error(
           "Telegram sessiyasini bekor qilib bo'lmadi. Saqlangan sessiya o'chirilmadi; Telegram → Sozlamalar → Qurilmalar bo'limida uni qo'lda bekor qiling.",
         );
       }
       userClient = null;
+      sourceBotPeer = null;
     }
     await Bots.updateOne(
       { _id: doc._id, ownerId },
@@ -1024,6 +1084,10 @@ function registerUserScheduler(bot, options) {
   async function cancelPending() {
     const mode = inputModes.get(ownerId);
     const hadPending = Boolean(mode || (loginAttempt && !loginAttempt.closed));
+    if (pendingAlbum) {
+      clearTimeout(pendingAlbum.timer);
+      pendingAlbum = null;
+    }
     inputModes.delete(ownerId);
     if (mode) {
       clearTimeout(mode.timer);
@@ -1061,6 +1125,10 @@ function registerUserScheduler(bot, options) {
         await ctx.reply("Mini App orqali akkaunt ulash bekor qilindi.");
       } else if (action === "cancel-input") {
         inputModes.delete(ownerId);
+        if (pendingAlbum) {
+          clearTimeout(pendingAlbum.timer);
+          pendingAlbum = null;
+        }
         await showPanel(ctx, false, "Kiritish bekor qilindi.");
       } else if (action === "chats") {
         await promptChatSelection(ctx);
@@ -1166,13 +1234,127 @@ function registerUserScheduler(bot, options) {
       return { error: "Interval noto'g'ri. Eng qisqa interval — 10 soniya." };
     }
     if (!schedule.chatIds.length) return { error: "Kamida bitta guruh yoki kanalni tanlang." };
-    const allowed = await availableTargets();
-    const targets = schedule.chatIds.map((id) => allowed.find((target) => target.peerId === id)).filter(Boolean);
+    const targets = await resolveSelectedTargets(schedule.chatIds);
     if (targets.length !== schedule.chatIds.length) {
       return { error: "Tanlangan chatlardan ayrimlari akkauntingizda topilmadi. Chatlar ro'yxatini yangilang." };
     }
     return { targets };
   }
+
+  async function saveMessageReference(ctx, messageRef, notify = true) {
+    try {
+      await saveSchedule({
+        message: "",
+        messageRef,
+        enabled: false,
+        nextRunAt: null,
+      });
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} xabarni saqlay olmadi:`, error.message);
+      if (notify) await ctx.reply(`Xabarni saqlab bo'lmadi: ${error.message}`);
+      return;
+    }
+    inputModes.delete(ownerId);
+    clearChatShareRequests();
+    chatPickerActive = false;
+    stopScheduler();
+    if (!notify) return;
+    await ctx.reply("Xabar jadval uchun saqlandi.", {
+      reply_markup: { remove_keyboard: true },
+    });
+    await showPanel(ctx, false, "Sozlama saqlandi.");
+  }
+
+  async function flushPendingAlbum(notify = true) {
+    if (!pendingAlbum) return;
+    const album = pendingAlbum;
+    pendingAlbum = null;
+    clearTimeout(album.timer);
+    if (inputModes.get(ownerId)?.type !== "message") return;
+    await saveMessageReference(album.ctx, {
+      messageIds: album.messageIds,
+      forwarded: album.forwarded,
+      description: album.description,
+    }, notify);
+  }
+
+  bot.onUpdate("message", async (ctx) => {
+    if (!isOwnerPrivateChat(ctx)) return;
+    const message = ctx.message;
+    if (message.chat_shared) {
+      await handleSharedChat(ctx, message.chat_shared);
+      ctx.handled = true;
+      return;
+    }
+
+    const text = typeof message.text === "string" ? message.text.trim() : "";
+    if (text === "/cancel" && inputModes.has(ownerId)) {
+      inputModes.delete(ownerId);
+      if (pendingAlbum) {
+        clearTimeout(pendingAlbum.timer);
+        pendingAlbum = null;
+      }
+      await showPanel(ctx, false, "Kiritish bekor qilindi.");
+      ctx.handled = true;
+      return;
+    }
+    if (chatPickerActive && (text === "✅ Tanlov tugadi" || text === "Bekor qilish")) {
+      clearChatShareRequests();
+      chatPickerActive = false;
+      await ctx.reply("Chat tanlash yakunlandi.", {
+        reply_markup: { remove_keyboard: true },
+      });
+      await showPanel(ctx);
+      ctx.handled = true;
+      return;
+    }
+
+    const mode = inputModes.get(ownerId);
+    if (mode?.type !== "message") return;
+    if (pendingAlbum && pendingAlbum.groupId !== String(message.media_group_id || "")) {
+      await flushPendingAlbum();
+      if (!inputModes.has(ownerId)) {
+        ctx.handled = true;
+        return;
+      }
+    }
+    if (!Number.isSafeInteger(message.message_id) || message.message_id < 1) {
+      await ctx.reply("Bu Telegram xabarini saqlab bo'lmadi. Qaytadan yuboring.");
+      ctx.handled = true;
+      return;
+    }
+    if (message.media_group_id) {
+      if (!pendingAlbum) {
+        pendingAlbum = {
+          groupId: String(message.media_group_id),
+          messageIds: [],
+          forwarded: isForwardedFromAnotherUser(message),
+          description: describeTelegramMessage(message),
+          ctx,
+          timer: null,
+        };
+      }
+      if (!pendingAlbum.messageIds.includes(message.message_id)) {
+        pendingAlbum.messageIds.push(message.message_id);
+      }
+      pendingAlbum.ctx = ctx;
+      clearTimeout(pendingAlbum.timer);
+      pendingAlbum.timer = setTimeout(() => {
+        void flushPendingAlbum().catch((error) => {
+          console.error(`User scheduler ${doc._id} albom xabarini saqlay olmadi:`, error.message);
+        });
+      }, ALBUM_CAPTURE_DELAY_MS);
+      ctx.handled = true;
+      return;
+    }
+    const messageRef = {
+      messageIds: [message.message_id],
+      forwarded: isForwardedFromAnotherUser(message),
+      description: describeTelegramMessage(message),
+    };
+    await saveMessageReference(ctx, messageRef);
+    ctx.handled = true;
+  });
 
   bot.onText(/[\s\S]+/, async (ctx) => {
     if (!isOwnerPrivateChat(ctx)) return;

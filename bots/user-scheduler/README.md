@@ -22,10 +22,22 @@ Serverda `TELEGRAM_API_ID` va `TELEGRAM_API_HASH` ni
 `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_TOKEN`, `MONGODB_URI` va
 `TOKEN_SECRET` environment secrets sifatida kiriting.
 
-Panel guruhlar va kanallarni alohida ro'yxatlaydi, admin bo'lish shart emas.
-Tanlangan chat bot jadvaliga saqlanadi. Telegram akkauntda yozish huquqi
-bo'lmagan guruh yoki kanalga post yuborilmasligi mumkin; bunday natija xatolar
-sonida ko'rsatiladi.
+Chat tanlash bo'limida Telegram'ning guruh va kanal tanlash tugmalari chiqadi.
+Telegram ro'yxatidan tanlangan chat botga `chat_shared` orqali yuboriladi;
+akkaunt chat a'zosi bo'lishi kifoya, admin huquqi talab qilinmaydi. Tanlangan
+chatni qayta tanlash uni jadvaldan olib tashlaydi. Telegram akkauntda yozish
+huquqi bo'lmagan joyga post yuborilmasligi mumkin; xato egasiga bildiriladi.
+
+Takrorlanadigan xabar uchun matn, media, fayl yoki forwardni botga yuboring.
+Xabar nusxasi o'rniga uning shaxsiy chatdagi Telegram xabar ID'si saqlanadi;
+yuborishda Telegram'ning native copy/forward amallari ishlatiladi. Shuning
+uchun media va formatlash saqlanadi, boshqa foydalanuvchidan forward qilingan
+xabar forward holida qoladi, akkaunt egasining o'z xabari esa forward belgisisiz
+nusxalanadi. Premium emoji va manba xabaridagi tugmalar ham Telegram native
+copy/forward amallari orqali uzatiladi. Albom bir nechta xabar ID'si bilan birga
+saqlanadi. Manba xabar o'chirilgan yoki Telegram tomonidan nusxalashga ruxsat
+berilmagan bo'lsa, yuborish xato sifatida egasiga bildiriladi.
+
 Xabar, manzillar va intervalni tanlab, oldindan ko'rib, tasdiqlagandan keyin
 birinchi post darhol yuboriladi; keyingilari 10 soniyadan 30 kungacha tanlangan
 intervalda takrorlanadi. **Jadvalni to'xtatish** keyingi yuborishlarni to'xtatadi;
