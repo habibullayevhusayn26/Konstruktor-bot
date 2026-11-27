@@ -855,8 +855,11 @@ function registerUserSchedulerSession(bot, options) {
     stopScheduler();
     await ctx.reply(
       `${wasSelected ? "Chat ro'yxatdan chiqarildi" : "Chat jadvalga qo'shildi"}: ${shared.title || target.title}`,
-      { reply_markup: chatPickerKeyboard() },
+      {
+        reply_markup: chatPickerKeyboard(),
+      },
     );
+    await showConnectedChatActions(ctx);
   }
 
   async function promptChatSelection(ctx) {
@@ -870,6 +873,59 @@ function registerUserSchedulerSession(bot, options) {
     await ctx.reply(
       "Guruh yoki kanal tugmasini bosing. Telegram ro'yxatidan chatni tanlasangiz, u User Bot jadvaliga qo'shiladi; tanlangan chatni yana tanlash uni olib tashlaydi.",
       { reply_markup: chatPickerKeyboard() },
+    );
+    await showConnectedChatActions(ctx);
+  }
+
+  async function showConnectedChatActions(ctx) {
+    const selectedIds = getSchedule().chatIds;
+    if (!selectedIds.length) {
+      await ctx.reply(
+        "Hozir hech qanday chat ulanmagan.",
+        {
+          reply_markup: {
+            inline_keyboard: [[{
+              text: "Chat tanlash",
+              callback_data: "userbot:chats",
+              style: "primary",
+            }]],
+          },
+        },
+      );
+      return;
+    }
+    let targets = [];
+    try {
+      targets = await resolveSelectedTargets(selectedIds);
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} ulangan chatlarni ololmadi:`, error.message);
+    }
+    if (targets.length !== selectedIds.length) {
+      const resolvedById = new Map(targets.map((target) => [target.peerId, target]));
+      targets = selectedIds.map((peerId) => resolvedById.get(peerId) || {
+        peerId,
+        title: `Chat ${peerId}`,
+      });
+    }
+    const rows = [];
+    for (let index = 0; index < targets.length; index++) {
+      const target = targets[index];
+      rows.push([{
+        text: `Uzni: ${target.title.slice(0, 38)}`,
+        callback_data: `userbot:chat-remove:${target.peerId}`,
+        style: "danger",
+      }]);
+    }
+    await ctx.reply(
+      "Ulangan chatlar:",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            ...rows,
+            [{ text: "Chat tanlash", callback_data: "userbot:chats", style: "primary" }],
+          ],
+        },
+      },
     );
   }
 
@@ -1498,6 +1554,25 @@ function registerUserSchedulerSession(bot, options) {
         await showPanel(ctx, false, "Kiritish bekor qilindi.");
       } else if (action === "chats") {
         await promptChatSelection(ctx);
+      } else if (action === "chat-remove") {
+        const peerId = args.join(":");
+        const schedule = getSchedule();
+        if (!schedule.chatIds.includes(peerId)) {
+          await ctx.reply("Bu chat allaqachon ulanmagan.");
+          await showConnectedChatActions(ctx);
+          return;
+        }
+        const nextChatIds = schedule.chatIds.filter((id) => id !== peerId);
+        await saveSchedule({
+          chatIds: nextChatIds,
+          enabled: false,
+          nextRunAt: null,
+        });
+        stopScheduler();
+        await ctx.reply("Chat User Bot jadvalidan uzildi.", {
+          reply_markup: chatPickerKeyboard(),
+        });
+        await showConnectedChatActions(ctx);
       } else if (action === "chat-list" || action === "toggle") {
         await promptChatSelection(ctx);
       } else if (action === "message" || action === "interval") {

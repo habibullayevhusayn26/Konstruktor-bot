@@ -566,7 +566,96 @@ test("native chat picker accepts a shared group outside the recent dialog list",
       },
     });
     assert.deepEqual(userRecords.get("123456:77").userSchedule.chatIds, ["peer-777"]);
-    assert.match(replies[1].text, /Chat jadvalga qo'shildi/);
+    assert.ok(replies.some((reply) => /Chat jadvalga qo'shildi|Chat jadvaldan/.test(reply.text)));
+  } finally {
+    await runtime.stop();
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
+});
+
+test("selected chat can be removed and chat share buttons remain active", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    userSessionEncrypted: "encrypted-session",
+    userAccount: { id: "77", username: "owner" },
+  };
+  const channel = { className: "Channel", title: "Test channel", broadcast: true };
+  const client = {
+    connect: async () => {},
+    checkAuthorization: async () => true,
+    getMe: async () => ({ id: 77, username: "owner" }),
+    getDialogs: async () => [{ isChannel: true, title: "Test channel", entity: channel }],
+    getEntity: async () => channel,
+    getPeerId: async () => "-100777",
+    joinChannel: async () => [],
+    disconnect: async () => {},
+  };
+  bot.sendMessage = async (chatId, text, options) => replies.push({ chatId, text, options });
+  bot.answerCallbackQuery = async () => ({});
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+  const { runtime, userRecords } = registerTestScheduler(bot, {
+    doc,
+    replies,
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+    createTelegramClient: () => client,
+  });
+
+  try {
+    await bot.processUpdate({
+      callback_query: {
+        id: "open-picker",
+        from: { id: 77 },
+        message: { chat: { id: 77, type: "private" }, message_id: 1 },
+        data: "userbot:chats",
+      },
+    });
+    const pickerReply = replies.find((reply) => reply.options?.reply_markup?.keyboard);
+    assert.ok(pickerReply);
+    assert.ok(pickerReply.options.reply_markup.keyboard[0][0].request_chat);
+    assert.ok(pickerReply.options.reply_markup.keyboard[0][1].request_chat);
+
+    await bot.processUpdate({
+      message: {
+        message_id: 2,
+        chat: { id: 77, type: "private" },
+        from: { id: 77 },
+        chat_shared: {
+          request_id: pickerReply.options.reply_markup.keyboard[0][1].request_chat.request_id,
+          chat_id: -100777,
+          title: "Test channel",
+        },
+      },
+    });
+    assert.deepEqual(
+      userRecords.get("123456:77").userSchedule.chatIds,
+      ["-100777"],
+    );
+    const latestPickerReply = replies.filter((reply) =>
+      reply.options?.reply_markup?.keyboard,
+    ).at(-1);
+    assert.ok(latestPickerReply.options.reply_markup.keyboard[0][0].request_chat);
+    assert.ok(latestPickerReply.options.reply_markup.keyboard[0][1].request_chat);
+
+    await bot.processUpdate({
+      callback_query: {
+        id: "remove-chat",
+        from: { id: 77 },
+        message: { chat: { id: 77, type: "private" }, message_id: 3 },
+        data: "userbot:chat-remove:-100777",
+      },
+    });
+    assert.deepEqual(userRecords.get("123456:77").userSchedule.chatIds, []);
   } finally {
     await runtime.stop();
     if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
