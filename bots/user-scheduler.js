@@ -7,7 +7,6 @@ const { StringSession } = require("teleproto/sessions");
 const MIN_INTERVAL_SECONDS = 10;
 const MAX_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
 const DIALOG_LIMIT = 500;
-const TARGETS_PER_PAGE = 8;
 const RUNNER_INTERVAL_MS = 15_000;
 const TARGET_SEND_DELAY_MS = 1_000;
 const LOGIN_TIMEOUT_MS = 8 * 60_000;
@@ -152,8 +151,11 @@ function registerUserScheduler(bot, options) {
   const apiHash = process.env.TELEGRAM_API_HASH || "";
   const miniAppUrl = buildMiniAppUrl(publicApiBaseUrl, doc._id);
   const inputModes = new Map();
+  const chatShareRequests = new Map();
   const loginStarts = [];
   let userClient = null;
+  let sourceBotPeer = null;
+  let chatPickerActive = false;
   let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
@@ -216,7 +218,7 @@ function registerUserScheduler(bot, options) {
               style: "primary",
             }],
         [{ text: "Guruh va kanallarni tanlash", callback_data: "userbot:chats", style: "primary" }],
-        [{ text: "Xabar matnini sozlash", callback_data: "userbot:message", style: "primary" }],
+        [{ text: "Takrorlanadigan xabarni tanlash", callback_data: "userbot:message", style: "primary" }],
         [{ text: "Takrorlanish intervali", callback_data: "userbot:interval", style: "primary" }],
         [{ text: "Ko'rib chiqish va boshlash", callback_data: "userbot:preview", style: "success" }],
         [{ text: "Jadvalni to'xtatish", callback_data: "userbot:stop", style: "danger" }],
@@ -244,7 +246,11 @@ function registerUserScheduler(bot, options) {
       `Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
       `Jadval: ${schedule.enabled ? "Faol" : "To'xtatilgan"}\n` +
       `Keyingi yuborish: ${nextRun}\n\n` +
-      (schedule.message ? `Xabar: ${schedule.message.slice(0, 250)}` : "Xabar matni hali sozlanmagan.") +
+      (isValidMessageRef(schedule.messageRef)
+        ? `Xabar: ${schedule.messageRef.description || "Telegram xabari"}${schedule.messageRef.forwarded ? " (forward)" : ""}`
+        : schedule.message
+          ? `Xabar: ${schedule.message.slice(0, 250)}`
+          : "Takrorlanadigan xabar hali tanlanmagan.") +
       (extraText ? `\n\n${extraText}` : "") +
       `\n\nAkkauntingiz a'zo bo'lgan guruh va kanallar ko'rsatiladi. ` +
       `Eng qisqa interval: 00:00:10.`;
@@ -274,94 +280,187 @@ function registerUserScheduler(bot, options) {
     return targets;
   }
 
-  async function renderTargetCategories(ctx, edit = true) {
-    if (!userClient) {
-      await ctx.reply("Avval shaxsiy Telegram akkauntingizni ulang.", {
-        reply_markup: panelKeyboard(),
-      });
-      return;
-    }
-    const targets = await availableTargets();
-    const groups = targets.filter((target) => target.kind === "groups").length;
-    const channels = targets.filter((target) => target.kind === "channels").length;
-    const selected = new Set(getSchedule().chatIds);
-    const keyboard = [
-      [{ text: `👥 Guruhlar (${groups})`, callback_data: "userbot:chat-list:groups:0", style: "primary" }],
-      [{ text: `📢 Kanallar (${channels})`, callback_data: "userbot:chat-list:channels:0", style: "primary" }],
-      [{ text: "Boshqaruv paneli", callback_data: "userbot:panel", style: "primary" }],
-    ];
-    const text =
-      `CHAT TURINI TANLANG\n\n` +
-      `Tanlangan chatlar: ${selected.size}\n` +
-      `Admin bo'lish shart emas. Telegram yozishga ruxsat bermagan chatlarga yuborish muvaffaqiyatsiz bo'ladi.`;
-    if (edit && typeof ctx.edit === "function") {
-      await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
-    } else {
-      await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
-    }
+  function clearChatShareRequests() {
+    for (const request of chatShareRequests.values()) clearTimeout(request.timer);
+    chatShareRequests.clear();
   }
 
-  async function renderTargets(ctx, kind, page = 0, edit = true) {
+  function makeChatShareButton(kind) {
+    let requestId;
+    do {
+      requestId = crypto.randomInt(1, 0x7fffffff);
+    } while (chatShareRequests.has(requestId));
+    const timer = setTimeout(() => chatShareRequests.delete(requestId), 10 * 60_000);
+    timer.unref?.();
+    chatShareRequests.set(requestId, { kind, timer });
+    return {
+      text: kind === "groups" ? "👥 Guruh tanlash" : "📢 Kanal tanlash",
+      request_chat: {
+        request_id: requestId,
+        chat_is_channel: kind === "channels",
+        request_title: true,
+        request_username: true,
+      },
+    };
+  }
+
+  function chatPickerKeyboard() {
+    clearChatShareRequests();
+    return {
+      keyboard: [
+        [makeChatShareButton("groups"), makeChatShareButton("channels")],
+        [{ text: "✅ Tanlov tugadi" }, { text: "Bekor qilish" }],
+      ],
+      resize_keyboard: true,
+      input_field_placeholder: "Guruh yoki kanalni tanlang",
+    };
+  }
+
+  function isValidMessageRef(messageRef) {
+    return (
+      Array.isArray(messageRef?.messageIds) &&
+      messageRef.messageIds.length > 0 &&
+      messageRef.messageIds.every((id) => Number.isSafeInteger(id) && id > 0) &&
+      typeof messageRef.forwarded === "boolean"
+    );
+  }
+
+  function hasScheduleMessage(schedule) {
+    return isValidMessageRef(schedule.messageRef) ||
+      (typeof schedule.message === "string" && Boolean(schedule.message.trim()));
+  }
+
+  function describeTelegramMessage(message) {
+    if (message.text) return "matn";
+    if (message.photo) return "rasm";
+    if (message.video) return "video";
+    if (message.animation) return "animatsiya";
+    if (message.document) return "fayl";
+    if (message.audio) return "audio";
+    if (message.voice) return "ovozli xabar";
+    if (message.video_note) return "video xabar";
+    if (message.sticker) return "stiker";
+    if (message.location) return "joylashuv";
+    if (message.venue) return "joy";
+    if (message.contact) return "kontakt";
+    if (message.poll) return "so'rovnoma";
+    return "xabar";
+  }
+
+  function isForwardedFromAnotherUser(message) {
+    const origin = message.forward_origin;
+    const fromUserId = origin?.type === "user"
+      ? origin.sender_user?.id
+      : message.forward_from?.id;
+    const hasForwardOrigin = Boolean(
+      origin ||
+      message.forward_from ||
+      message.forward_from_chat ||
+      message.forward_sender_name ||
+      message.forward_date,
+    );
+    return hasForwardOrigin && String(fromUserId || "") !== String(ownerId);
+  }
+
+  async function getSourceBotPeer() {
+    if (!sourceBotPeer) {
+      if (!userClient || !doc.username) {
+        throw new Error("User Bot suhbatini Telegram akkauntingizdan topib bo'lmadi.");
+      }
+      sourceBotPeer = await userClient.getEntity(String(doc.username).replace(/^@/, ""));
+    }
+    return sourceBotPeer;
+  }
+
+  async function sendScheduledMessage(target, schedule) {
+    if (!isValidMessageRef(schedule.messageRef)) {
+      return userClient.sendMessage(target, { message: schedule.message });
+    }
+    const params = {
+      messages: schedule.messageRef.messageIds,
+      fromPeer: await getSourceBotPeer(),
+    };
+    if (schedule.messageRef.forwarded) {
+      return userClient.forwardMessages(target, params);
+    }
+    return userClient.copyMessages(target, params);
+  }
+
+  async function handleSharedChat(ctx, shared) {
+    const requestId = Number(shared.request_id);
+    const request = chatShareRequests.get(requestId);
+    if (!request) {
+      await ctx.reply("Chat tanlash so'rovi eskirgan. Paneldan qayta tanlang.", {
+        reply_markup: { remove_keyboard: true },
+      });
+      chatPickerActive = false;
+      return;
+    }
+    clearChatShareRequests();
+    if (!userClient) {
+      chatPickerActive = false;
+      await ctx.reply("Avval shaxsiy Telegram akkauntingizni ulang.", {
+        reply_markup: { remove_keyboard: true },
+      });
+      return;
+    }
+
+    let target;
+    let targets;
+    try {
+      targets = await availableTargets(request.kind);
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} chatlar ro'yxatini ololmadi:`, error.message);
+      await ctx.reply("Chatlar ro'yxatini olish muvaffaqiyatsiz tugadi. Qayta urinib ko'ring.", {
+        reply_markup: chatPickerKeyboard(),
+      });
+      return;
+    }
+    target = targets.find((item) => item.peerId === String(shared.chat_id));
+    if (!target) {
+      try {
+        const entity = await userClient.getEntity(shared.chat_id);
+        const peerId = String(await userClient.getPeerId(entity, true));
+        target = targets.find((item) => item.peerId === peerId);
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} tanlangan chatni aniqlay olmadi:`, error.message);
+      }
+    }
+    if (!target) {
+      await ctx.reply("Tanlangan chat akkauntingiz ro'yxatidan topilmadi.", {
+        reply_markup: chatPickerKeyboard(),
+      });
+      return;
+    }
+
+    const selected = new Set(getSchedule().chatIds);
+    const wasSelected = selected.has(target.peerId);
+    if (wasSelected) selected.delete(target.peerId);
+    else selected.add(target.peerId);
+    await saveSchedule({
+      chatIds: [...selected],
+      enabled: false,
+      nextRunAt: null,
+    });
+    stopScheduler();
+    await ctx.reply(
+      `${wasSelected ? "Chat ro'yxatdan chiqarildi" : "Chat jadvalga qo'shildi"}: ${shared.title || target.title}`,
+      { reply_markup: chatPickerKeyboard() },
+    );
+  }
+
+  async function promptChatSelection(ctx) {
     if (!userClient) {
       await ctx.reply("Avval shaxsiy Telegram akkauntingizni ulang.", {
         reply_markup: panelKeyboard(),
       });
       return;
     }
-    if (!["groups", "channels"].includes(kind)) {
-      await renderTargetCategories(ctx, edit);
-      return;
-    }
-    const targets = await availableTargets(kind);
-    if (!targets.length) {
-      const label = kind === "groups" ? "guruh" : "kanal";
-      const text = `Telegram akkauntingizda tanlash uchun ${label} topilmadi.`;
-      const keyboard = [[{
-        text: "⬅️ Guruhlar va kanallar",
-        callback_data: "userbot:chats",
-        style: "primary",
-      }]];
-      if (edit && typeof ctx.edit === "function") {
-        await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
-      } else {
-        await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
-      }
-      return;
-    }
-    const pages = Math.ceil(targets.length / TARGETS_PER_PAGE);
-    const currentPage = Math.min(Math.max(0, page), pages - 1);
-    const selected = new Set(getSchedule().chatIds);
-    const keyboard = targets
-      .slice(currentPage * TARGETS_PER_PAGE, (currentPage + 1) * TARGETS_PER_PAGE)
-      .map((target) => [{
-        text: `${selected.has(target.peerId) ? "✓ " : ""}${target.title}`.slice(0, 64),
-        callback_data: `userbot:toggle:${kind}:${currentPage}:${target.peerId}`,
-        style: selected.has(target.peerId) ? "success" : "primary",
-      }]);
-    if (pages > 1) {
-      keyboard.push([
-        ...(currentPage > 0
-          ? [{ text: "⬅️ Oldingi", callback_data: `userbot:chat-list:${kind}:${currentPage - 1}` }]
-          : []),
-        ...(currentPage + 1 < pages
-          ? [{ text: "Keyingi ➡️", callback_data: `userbot:chat-list:${kind}:${currentPage + 1}` }]
-          : []),
-      ]);
-    }
-    keyboard.push([{
-      text: "⬅️ Guruhlar va kanallar",
-      callback_data: "userbot:chats",
-      style: "primary",
-    }]);
-    const text =
-      `${kind === "groups" ? "GURUHLAR" : "KANALLAR"}\n\n` +
-      `Tanlangan: ${selected.size} · Sahifa ${currentPage + 1}/${pages}\n\n` +
-      "Chatni tanlash yoki tanlovdan chiqarish uchun bosing:";
-    if (edit && typeof ctx.edit === "function") {
-      await ctx.edit(text, { reply_markup: { inline_keyboard: keyboard } });
-    } else {
-      await ctx.reply(text, { reply_markup: { inline_keyboard: keyboard } });
-    }
+    chatPickerActive = true;
+    await ctx.reply(
+      "Guruh yoki kanal tugmasini bosing. Telegram ro'yxatidan chatni tanlasangiz, u User Bot jadvaliga qo'shiladi; tanlangan chatni yana tanlash uni olib tashlaydi.",
+      { reply_markup: chatPickerKeyboard() },
+    );
   }
 
   function stopScheduler() {
@@ -397,13 +496,12 @@ function registerUserScheduler(bot, options) {
         return;
       }
       if (
-        typeof schedule.message !== "string" ||
-        !schedule.message.trim() ||
-        schedule.message.length > 4096
+        !hasScheduleMessage(schedule) ||
+        (typeof schedule.message === "string" && schedule.message.length > 4096)
       ) {
         await saveSchedule({ enabled: false, nextRunAt: null });
         stopScheduler();
-        await notifyOwner("Xabar matni noto'g'ri bo'lgani uchun jadval to'xtatildi.");
+        await notifyOwner("Takrorlanadigan xabar noto'g'ri bo'lgani uchun jadval to'xtatildi.");
         return;
       }
 
@@ -445,7 +543,7 @@ function registerUserScheduler(bot, options) {
         }
         const target = targets[index];
         try {
-          await userClient.sendMessage(target.dialog, { message: schedule.message });
+          await sendScheduledMessage(target.dialog, schedule);
           sent++;
         } catch (error) {
           failed++;
@@ -965,34 +1063,14 @@ function registerUserScheduler(bot, options) {
         inputModes.delete(ownerId);
         await showPanel(ctx, false, "Kiritish bekor qilindi.");
       } else if (action === "chats") {
-        await renderTargetCategories(ctx);
-      } else if (action === "chat-list") {
-        await renderTargets(ctx, args[0], Number(args[1]) || 0);
-      } else if (action === "toggle") {
-        const kind = args[0];
-        const page = Number(args[1]) || 0;
-        const peerId = args[2];
-        const targets = await availableTargets(kind);
-        const target = targets.find((item) => item.peerId === peerId);
-        if (!target) {
-          await ctx.reply("Bu chat endi Telegram akkauntingizdagi chatlar ro'yxatida yo'q.");
-          return;
-        }
-        const selected = new Set(schedule.chatIds);
-        if (selected.has(peerId)) selected.delete(peerId);
-        else selected.add(peerId);
-        await saveSchedule({
-          chatIds: [...selected],
-          enabled: false,
-          nextRunAt: null,
-        });
-        stopScheduler();
-        await renderTargets(ctx, kind, page);
+        await promptChatSelection(ctx);
+      } else if (action === "chat-list" || action === "toggle") {
+        await promptChatSelection(ctx);
       } else if (action === "message" || action === "interval") {
         inputModes.set(ownerId, { type: action });
         await ctx.reply(
           action === "message"
-            ? "Takror yuboriladigan matnni yuboring (1–4096 belgi). Saqlashdan oldin xabarni ko'rib chiqasiz."
+            ? "Takror yuboriladigan xabarni yuboring: matn, media, fayl yoki forward. Tugmalar va premium emoji ham Telegram xabaridan saqlanadi."
             : "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:00:10). Eng qisqa interval — 10 soniya.",
           {
             reply_markup: {
@@ -1010,8 +1088,15 @@ function registerUserScheduler(bot, options) {
           await ctx.reply(validation.error, { reply_markup: panelKeyboard() });
           return;
         }
-        await ctx.reply("XABAR MATNI OLDIDAN KO'RISH:");
-        await ctx.reply(schedule.message);
+        if (isValidMessageRef(schedule.messageRef)) {
+          await ctx.reply(
+            `XABAR TANLANDI: ${schedule.messageRef.description || "Telegram xabari"}` +
+              (schedule.messageRef.forwarded ? " (forward holida yuboriladi)." : " (siz yuborgandek nusxalanadi)."),
+          );
+        } else {
+          await ctx.reply("XABAR MATNI OLDIDAN KO'RISH:");
+          await ctx.reply(schedule.message);
+        }
         await ctx.reply(
           `Manzillar: ${validation.targets.length}\n` +
             `Interval: ${formatInterval(schedule.intervalSeconds)}\n` +
@@ -1068,11 +1153,10 @@ function registerUserScheduler(bot, options) {
     const schedule = getSchedule();
     if (!userClient) return { error: "Avval Telegram akkauntingizni ulang." };
     if (
-      typeof schedule.message !== "string" ||
-      !schedule.message.trim() ||
-      schedule.message.length > 4096
+      !hasScheduleMessage(schedule) ||
+      (typeof schedule.message === "string" && schedule.message.length > 4096)
     ) {
-      return { error: "Xabar matnini 1–4096 belgi oralig'ida sozlang." };
+      return { error: "Takror yuboriladigan xabarni tanlang yoki yuboring." };
     }
     if (
       !Number.isInteger(Number(schedule.intervalSeconds)) ||
@@ -1097,12 +1181,11 @@ function registerUserScheduler(bot, options) {
     if (!mode) return;
     const value = ctx.text.trim();
     try {
-      if (mode.type === "message") {
-        if (!value || value.length > 4096) throw new Error("Matn 1–4096 belgi bo'lishi kerak.");
-        await saveSchedule({ message: value, enabled: false, nextRunAt: null });
-      } else if (mode.type === "interval") {
+      if (mode.type === "interval") {
         const intervalSeconds = parseInterval(value);
         await saveSchedule({ intervalSeconds, enabled: false, nextRunAt: null });
+      } else {
+        return;
       }
       stopScheduler();
       inputModes.delete(ownerId);
