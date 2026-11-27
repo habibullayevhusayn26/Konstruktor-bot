@@ -9,34 +9,108 @@
       :root {
         color-scheme: light dark;
         font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-        background: var(--tg-theme-bg-color, #f3f5f8);
-        color: var(--tg-theme-text-color, #18212f);
+        background: var(--tg-theme-bg-color, #101827);
+        color: var(--tg-theme-text-color, #f4f7fb);
       }
       * { box-sizing: border-box; }
-      body { margin: 0; padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
-      main {
-        width: min(100%, 460px);
-        margin: 0 auto;
-        padding: 22px;
-        border-radius: 20px;
-        background: var(--tg-theme-secondary-bg-color, #fff);
-        box-shadow: 0 10px 32px rgb(22 34 51 / 8%);
+      body {
+        min-height: 100dvh;
+        margin: 0;
+        padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
+        background:
+          radial-gradient(circle at 50% -10%, rgb(54 91 138 / 28%), transparent 42%),
+          linear-gradient(180deg, #101827 0%, #0b1220 100%);
       }
-      h1 { margin: 0 0 8px; font-size: 22px; }
-      p { line-height: 1.5; }
-      .muted { color: var(--tg-theme-hint-color, #65758b); font-size: 14px; }
-      .status { min-height: 24px; margin: 12px 0; color: var(--tg-theme-link-color, #2481cc); }
-      label { display: block; margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+      main {
+        width: min(100%, 420px);
+        min-height: calc(100dvh - 44px);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .hero { text-align: center; margin-bottom: 24px; }
+      .otp-icon {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 14px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgb(96 151 210 / 48%);
+        border-radius: 18px;
+        background: linear-gradient(145deg, rgb(47 89 139 / 76%), rgb(21 43 74 / 76%));
+        box-shadow: 0 14px 34px rgb(1 8 20 / 36%), inset 0 1px 1px rgb(255 255 255 / 12%);
+        color: #82b8ef;
+        font-size: 25px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(24px, 7vw, 34px);
+        line-height: 1.12;
+        letter-spacing: -.7px;
+        text-align: center;
+        text-shadow: 0 2px 18px rgb(70 142 208 / 18%);
+      }
+      .card {
+        width: 100%;
+        border: 1px solid rgb(92 128 174 / 28%);
+        border-radius: 22px;
+        padding: 20px;
+        background: rgb(22 33 52 / 88%);
+        box-shadow: 0 18px 48px rgb(1 7 18 / 38%), inset 0 1px rgb(255 255 255 / 4%);
+        backdrop-filter: blur(16px);
+      }
+      h2 { margin: 0 0 6px; font-size: 21px; text-align: center; }
+      p { line-height: 1.5; margin: 8px 0 0; }
+      .muted { color: #96a4b8; font-size: 14px; text-align: center; }
+      .status {
+        min-height: 22px;
+        margin: 14px 0 4px;
+        color: #73b5ed;
+        font-size: 14px;
+        text-align: center;
+      }
+      label { display: block; margin: 14px 0 7px; font-size: 14px; font-weight: 700; }
       input[type="tel"], input[type="text"], input[type="email"], input[type="password"] {
         width: 100%;
-        min-height: 48px;
-        padding: 12px;
-        border: 1px solid var(--tg-theme-hint-color, #b8c2ce);
-        border-radius: 12px;
-        background: var(--tg-theme-bg-color, #fff);
-        color: var(--tg-theme-text-color, #18212f);
+        min-height: 52px;
+        padding: 12px 14px;
+        border: 1px solid rgb(119 151 190 / 38%);
+        border-radius: 14px;
+        outline: none;
+        background: rgb(9 18 34 / 58%);
+        color: #f7fafc;
         font: inherit;
         font-size: 16px;
+      }
+      input:focus {
+        border-color: #73aee8;
+        box-shadow: 0 0 0 3px rgb(77 144 211 / 14%);
+      }
+      .otp-row {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 8px;
+        margin: 18px 0 14px;
+      }
+      .otp-box {
+        width: 100%;
+        aspect-ratio: .82;
+        min-width: 0;
+        padding: 0;
+        border: 1px solid rgb(119 151 190 / 38%);
+        border-radius: 14px;
+        outline: none;
+        background: linear-gradient(145deg, rgb(36 53 79 / 78%), rgb(16 29 49 / 78%));
+        color: #fff;
+        font: 700 21px/1 system-ui, sans-serif;
+        text-align: center;
+        caret-color: #67aaf0;
+      }
+      .otp-box:focus {
+        border-color: #67aaf0;
+        box-shadow: 0 0 0 3px rgb(77 144 211 / 16%), 0 8px 22px rgb(2 9 21 / 28%);
+        transform: translateY(-1px);
       }
       .consent {
         display: grid;
@@ -51,30 +125,58 @@
       .consent input { width: 18px; height: 18px; margin: 2px 0 0; }
       button {
         width: 100%;
-        min-height: 48px;
-        margin-top: 12px;
-        border: 0;
-        border-radius: 12px;
-        background: var(--tg-theme-button-color, #2481cc);
-        color: var(--tg-theme-button-text-color, #fff);
+        min-height: 52px;
+        margin-top: 14px;
+        border: 1px solid rgb(142 187 231 / 25%);
+        border-radius: 14px;
+        background: linear-gradient(180deg, #2e73b5, #245e98);
+        color: #fff;
         font: inherit;
         font-weight: 700;
+        box-shadow: 0 12px 24px rgb(4 18 39 / 26%);
       }
+      button:active { transform: translateY(1px); }
+      button:disabled { opacity: .58; }
       button.secondary {
         background: transparent;
-        color: var(--tg-theme-link-color, #2481cc);
-        border: 1px solid var(--tg-theme-hint-color, #b8c2ce);
+        color: #8db9df;
+        border: 1px solid rgb(119 151 190 / 38%);
+        box-shadow: none;
+      }
+      .secondary-row {
+        display: flex;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 16px;
+        color: #94a1b4;
+        font-size: 14px;
+      }
+      .text-action {
+        width: auto;
+        min-height: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: #8dc2ef;
+        box-shadow: none;
+        font-size: 14px;
       }
       [hidden] { display: none !important; }
     </style>
   </head>
   <body>
     <main>
-      <h1>Telegram akkauntni ulash</h1>
-      <p class="muted">Faqat o'zingizga tegishli akkauntni ulang. Tasdiqlash kodi Telegram tomonidan yuboriladi.</p>
+      <section class="hero">
+        <div class="otp-icon" aria-hidden="true">🔐</div>
+        <h1 id="screen-title">OTP Verification UI</h1>
+      </section>
+      <section class="card">
       <p id="status" class="status" role="status" aria-live="polite">Mini App tekshirilmoqda...</p>
 
       <form id="phone-form" hidden>
+        <h2>Akkauntni ulash</h2>
+        <p class="muted">Tasdiqlash kodi Telegram tomonidan yuboriladi.</p>
         <label for="phone">Telefon raqami</label>
         <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+998901234567" required>
         <label class="consent">
@@ -85,10 +187,22 @@
       </form>
 
       <form id="code-form" hidden>
-        <label for="code">Telegram login kodi</label>
-        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" required>
-        <p class="muted">Kod Telegram ilovasidagi rasmiy xabarda yoki SMS orqali kelishi mumkin. Uni boshqa hech kimga bermang.</p>
+        <h2>Enter your code</h2>
+        <p id="code-description" class="muted">Telegramdan kelgan login kodini kiriting.</p>
+        <input id="code" name="code" type="hidden" inputmode="numeric" autocomplete="one-time-code" required>
+        <div id="otp-row" class="otp-row" aria-label="Telegram login kodi">
+          <input class="otp-box" maxlength="1" inputmode="numeric" autocomplete="one-time-code" aria-label="1-kod raqami">
+          <input class="otp-box" maxlength="1" inputmode="numeric" aria-label="2-kod raqami">
+          <input class="otp-box" maxlength="1" inputmode="numeric" aria-label="3-kod raqami">
+          <input class="otp-box" maxlength="1" inputmode="numeric" aria-label="4-kod raqami">
+          <input class="otp-box" maxlength="1" inputmode="numeric" aria-label="5-kod raqami">
+          <input class="otp-box" maxlength="1" inputmode="numeric" aria-label="6-kod raqami">
+        </div>
         <button type="submit">Kodni tasdiqlash</button>
+        <div class="secondary-row">
+          <span>Didn't get a code?</span>
+          <button id="resend-code" class="text-action" type="button">Resend</button>
+        </div>
       </form>
 
       <form id="password-form" hidden>
@@ -112,6 +226,7 @@
       </form>
 
       <button id="cancel" class="secondary" type="button" hidden>Ulashni bekor qilish</button>
+      </section>
     </main>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="../mini-app.js"></script>

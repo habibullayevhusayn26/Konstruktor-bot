@@ -131,6 +131,25 @@ test("Mini App URL requires HTTPS and preserves the configured path prefix", () 
   assert.equal(buildMiniAppUrl("https://maker.example?key=value", 123456), null);
 });
 
+test("Mini App login UI uses the OTP verification visual layout", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler", "mini-app.html"),
+    "utf8",
+  );
+  const script = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler", "mini-app.js"),
+    "utf8",
+  );
+  assert.match(html, /OTP Verification UI/);
+  assert.match(html, /id="otp-row"/);
+  assert.equal((html.match(/class="otp-box"/g) || []).length, 6);
+  assert.match(html, /linear-gradient\(145deg/);
+  assert.match(script, /otpBoxes/);
+  assert.match(script, /resendCodeButton/);
+});
+
 test("Mini App initData verifies Telegram signatures, owner data, and freshness", () => {
   const token = "123456:bot-token";
   const now = Date.now();
