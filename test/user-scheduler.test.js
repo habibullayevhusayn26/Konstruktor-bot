@@ -32,6 +32,78 @@ function signedInitData(botToken, userId, authDate = Math.floor(Date.now() / 100
   return params.toString();
 }
 
+function copyUserRecord(record) {
+  return {
+    ...record,
+    ...(record.userSchedule ? { userSchedule: { ...record.userSchedule } } : {}),
+    ...(record.userAccount ? { userAccount: { ...record.userAccount } } : {}),
+  };
+}
+
+function createUserSchedulerStore() {
+  const records = new Map();
+  const keyFor = ({ botId, userId }) => `${botId}:${userId}`;
+  const collection = {
+    async updateOne(filter, update, options = {}) {
+      const key = keyFor(filter);
+      let record = records.get(key);
+      const inserted = !record;
+      if (!record && !options.upsert) return { matchedCount: 0 };
+      if (!record) record = { botId: filter.botId, userId: filter.userId };
+      if (inserted && update.$setOnInsert) Object.assign(record, update.$setOnInsert);
+      if (update.$set) Object.assign(record, update.$set);
+      if (update.$unset) {
+        for (const field of Object.keys(update.$unset)) delete record[field];
+      }
+      records.set(key, record);
+      return { matchedCount: inserted ? 0 : 1, upsertedCount: inserted ? 1 : 0 };
+    },
+    async findOne(filter) {
+      const record = records.get(keyFor(filter));
+      return record ? copyUserRecord(record) : null;
+    },
+    find(filter) {
+      return {
+        toArray: async () => [...records.values()]
+          .filter((record) =>
+            record.botId === filter.botId &&
+            (filter["userSchedule.enabled"] !== true || record.userSchedule?.enabled === true),
+          )
+          .map(copyUserRecord),
+      };
+    },
+    async deleteMany(filter) {
+      for (const [key, record] of records) {
+        if (record.botId === filter.botId) records.delete(key);
+      }
+    },
+  };
+  return { collection, records };
+}
+
+function registerTestScheduler(bot, options) {
+  const store = createUserSchedulerStore();
+  const replies = options.replies || [];
+  const callbackAnswers = options.callbackAnswers || [];
+  const createSessionBot = options.createSessionBot || ((token, botOptions) => {
+    const sessionBot = new BotConstructor(token, botOptions);
+    sessionBot.sendMessage = async (chatId, text, sendOptions) => {
+      replies.push({ chatId, text, options: sendOptions });
+    };
+    sessionBot.answerCallbackQuery = async (id, answerOptions) => {
+      callbackAnswers.push({ id, options: answerOptions });
+    };
+    return sessionBot;
+  });
+  const runtime = registerUserScheduler(bot, {
+    ...options,
+    Bots: options.Bots || { updateOne: async () => ({ matchedCount: 1 }) },
+    UserSchedulerUsers: store.collection,
+    createSessionBot,
+  });
+  return { runtime, userRecords: store.records, replies, callbackAnswers };
+}
+
 test("user scheduler is registered as a generated bot type", () => {
   assert.equal(BOT_TYPES["user-scheduler"].module, "user-scheduler");
   assert.equal(BOT_TYPES["user-scheduler"].runtime, undefined);
@@ -76,11 +148,10 @@ test("Mini App initData verifies Telegram signatures, owner data, and freshness"
   assert.throws(() => validateWebAppInitData(stale, token, now), /eskirgan/);
 });
 
-test("Mini App API only returns login status to the signed bot owner", async () => {
+test("Mini App API isolates login status by signed-in Telegram user", async () => {
   const bot = new BotConstructor("test-token");
-  const runtime = registerUserScheduler(bot, {
+  const { runtime, userRecords } = registerTestScheduler(bot, {
     doc: { _id: 123456, ownerId: 77 },
-    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
   });
@@ -91,11 +162,19 @@ test("Mini App API only returns login status to the signed bot owner", async () 
     }),
     { phase: "idle", message: "Ulashga tayyor." },
   );
-  await assert.rejects(
-    runtime.handleApiRequest("status", {
+  assert.deepEqual(
+    await runtime.handleApiRequest("status", {
       initData: signedInitData(bot.token, 88),
     }),
-    { statusCode: 403 },
+    { phase: "idle", message: "Ulashga tayyor." },
+  );
+  assert.ok(userRecords.has("123456:77"));
+  assert.ok(userRecords.has("123456:88"));
+  await assert.rejects(
+    runtime.handleApiRequest("status", {
+      initData: signedInitData("wrong-token", 88),
+    }),
+    { statusCode: 401 },
   );
   await runtime.stop();
 });
@@ -135,21 +214,18 @@ test("groups and channels are selectable without admin rights, but not after lea
   );
 });
 
-test("user scheduler panel only responds to its owner in a private chat", async () => {
+test("each private user gets an isolated panel and schedule", async () => {
   const bot = new BotConstructor("test-token");
   const replies = [];
   const callbackAnswers = [];
-  bot.sendMessage = async (chatId, text, options) => {
-    replies.push({ chatId, text, options });
-  };
-  bot.answerCallbackQuery = async (id, options) => callbackAnswers.push({ id, options });
-  const runtime = registerUserScheduler(bot, {
+  const { runtime, userRecords } = registerTestScheduler(bot, {
     doc: {
       _id: 123456,
       ownerId: 77,
       userSchedule: { intervalMinutes: 60 },
     },
-    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    replies,
+    callbackAnswers,
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
   });
@@ -169,32 +245,105 @@ test("user scheduler panel only responds to its owner in a private chat", async 
     },
   });
   await bot.processUpdate({
+    message: {
+      chat: { id: 99, type: "group" },
+      from: { id: 99 },
+      text: "/start",
+    },
+  });
+  await bot.processUpdate({
     callback_query: {
-      id: "unauthorized",
+      id: "user-message-mode",
       from: { id: 88 },
       message: { chat: { id: 88, type: "private" }, message_id: 1 },
-      data: "userbot:panel",
+      data: "userbot:message",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 2,
+      chat: { id: 88, type: "private" },
+      from: { id: 88 },
+      text: "user 88 message",
     },
   });
 
-  assert.equal(replies.length, 1);
+  assert.equal(replies.length, 5);
   assert.equal(callbackAnswers.length, 1);
-  assert.match(callbackAnswers[0].options.text, /bot egasi/);
   assert.match(replies[0].text, /USER BOT — BOSHQARUV PANELI/);
   assert.match(replies[0].text, /Interval: 01:00:00/);
-  assert.equal(replies[0].options.reply_markup.inline_keyboard[0][0].style, "primary");
+  assert.match(replies[1].text, /USER BOT — BOSHQARUV PANELI/);
+  assert.equal(replies[1].options.reply_markup.inline_keyboard[0][0].style, "primary");
+  assert.equal(replies[2].chatId, 88);
+  assert.match(replies[2].text, /Takror yuboriladigan xabarni yuboring/);
+  assert.deepEqual(userRecords.get("123456:88").userSchedule.messageRef.messageIds, [2]);
+  assert.equal(userRecords.get("123456:88").userSchedule.messageRef.description, "matn");
+  assert.equal(userRecords.get("123456:77").userSchedule.message, undefined);
   await runtime.stop();
+});
+
+test("legacy bot-owner account is migrated without sharing it with other users", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    userSessionEncrypted: "owner-encrypted-session",
+    userAccount: { id: "77", username: "owner" },
+  };
+  const client = {
+    connect: async () => {},
+    checkAuthorization: async () => true,
+    getMe: async () => ({ id: 77, username: "owner" }),
+    disconnect: async () => {},
+  };
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+  const { runtime, userRecords } = registerTestScheduler(bot, {
+    doc,
+    replies,
+    createTelegramClient: () => client,
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+  });
+
+  try {
+    await bot.processUpdate({
+      message: {
+        chat: { id: 77, type: "private" },
+        from: { id: 77 },
+        text: "/start",
+      },
+    });
+    await bot.processUpdate({
+      message: {
+        chat: { id: 88, type: "private" },
+        from: { id: 88 },
+        text: "/start",
+      },
+    });
+
+    assert.equal(userRecords.get("123456:77").userSessionEncrypted, "owner-encrypted-session");
+    assert.equal(userRecords.get("123456:88").userSessionEncrypted, undefined);
+    assert.match(replies[0].text, /Ulangan: @owner/);
+    assert.match(replies[1].text, /Telegram akkaunt ulanmagan/);
+  } finally {
+    await runtime.stop();
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
 });
 
 test("user scheduler cancel hook clears a pending message input", async () => {
   const bot = new BotConstructor("test-token");
   const replies = [];
   let updates = 0;
-  bot.sendMessage = async (chatId, text, options) => {
-    replies.push({ chatId, text, options });
-  };
-  bot.answerCallbackQuery = async () => ({});
-  const runtime = registerUserScheduler(bot, {
+  const { runtime } = registerTestScheduler(bot, {
     doc: { _id: 123456, ownerId: 77 },
     Bots: {
       updateOne: async () => {
@@ -202,6 +351,7 @@ test("user scheduler cancel hook clears a pending message input", async () => {
         return { matchedCount: 1 };
       },
     },
+    replies,
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
   });
@@ -229,14 +379,9 @@ test("user scheduler cancel hook clears a pending message input", async () => {
 test("user scheduler stores media and forwarding details from the submitted Telegram message", async () => {
   const bot = new BotConstructor("test-token");
   const replies = [];
-  const doc = { _id: 123456, ownerId: 77 };
-  bot.sendMessage = async (chatId, text, options) => {
-    replies.push({ chatId, text, options });
-  };
-  bot.answerCallbackQuery = async () => ({});
-  const runtime = registerUserScheduler(bot, {
-    doc,
-    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+  const { runtime, userRecords } = registerTestScheduler(bot, {
+    doc: { _id: 123456, ownerId: 77 },
+    replies,
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
   });
@@ -262,24 +407,20 @@ test("user scheduler stores media and forwarding details from the submitted Tele
     },
   });
 
-  assert.deepEqual(doc.userSchedule.messageRef, {
+  assert.deepEqual(userRecords.get("123456:77").userSchedule.messageRef, {
     messageIds: [23],
     forwarded: true,
     description: "rasm",
   });
-  assert.equal(doc.userSchedule.message, "");
+  assert.equal(userRecords.get("123456:77").userSchedule.message, "");
   assert.match(replies[1].text, /Xabar jadval uchun saqlandi/);
   await runtime.stop();
 });
 
 test("user scheduler collects media album messages before saving the reference", async () => {
   const bot = new BotConstructor("test-token");
-  const doc = { _id: 123456, ownerId: 77 };
-  bot.sendMessage = async () => ({});
-  bot.answerCallbackQuery = async () => ({});
-  const runtime = registerUserScheduler(bot, {
-    doc,
-    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+  const { runtime, userRecords } = registerTestScheduler(bot, {
+    doc: { _id: 123456, ownerId: 77 },
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
   });
@@ -307,8 +448,8 @@ test("user scheduler collects media album messages before saving the reference",
   }
   await runtime.stop();
 
-  assert.deepEqual(doc.userSchedule.messageRef.messageIds, [30, 31]);
-  assert.equal(doc.userSchedule.messageRef.description, "rasm");
+  assert.deepEqual(userRecords.get("123456:77").userSchedule.messageRef.messageIds, [30, 31]);
+  assert.equal(userRecords.get("123456:77").userSchedule.messageRef.description, "rasm");
 });
 
 test("native chat picker accepts a shared group outside the recent dialog list", async () => {
@@ -342,9 +483,9 @@ test("native chat picker accepts a shared group outside the recent dialog list",
   const oldApiHash = process.env.TELEGRAM_API_HASH;
   process.env.TELEGRAM_API_ID = "12345";
   process.env.TELEGRAM_API_HASH = "test-api-hash";
-  const runtime = registerUserScheduler(bot, {
+  const { runtime, userRecords } = registerTestScheduler(bot, {
     doc,
-    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    replies,
     encryptSecret: (value) => value,
     decryptSecret: (value) => value,
     createTelegramClient: () => client,
@@ -378,7 +519,7 @@ test("native chat picker accepts a shared group outside the recent dialog list",
         },
       },
     });
-    assert.deepEqual(doc.userSchedule.chatIds, ["peer-777"]);
+    assert.deepEqual(userRecords.get("123456:77").userSchedule.chatIds, ["peer-777"]);
     assert.match(replies[1].text, /Chat jadvalga qo'shildi/);
   } finally {
     await runtime.stop();
@@ -443,10 +584,8 @@ test("scheduled messages copy owner forwards and preserve third-party forwards",
           },
           disconnect: async () => {},
         };
-        bot.sendMessage = async () => ({});
-        const runtime = registerUserScheduler(bot, {
+        const { runtime } = registerTestScheduler(bot, {
           doc,
-          Bots: { updateOne: async () => ({ matchedCount: 1 }) },
           encryptSecret: (value) => value,
           decryptSecret: (value) => value,
           createTelegramClient: () => client,

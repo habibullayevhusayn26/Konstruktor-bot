@@ -1,17 +1,20 @@
 # User Bot — rejalashtirilgan postlar
 
 Marketdan **User Bot — rejalashtirilgan postlar** turini yarating va yangi
-botning shaxsiy chatida `/start` yuboring. **Mini App orqali akkauntni ulash**
-tugmasini bosib, telefon raqamingizni xalqaro formatda kiriting. Telegram
-yuborgan bir martalik login kodini Mini App ichiga yozing; 2FA yoqilgan bo'lsa,
-parol ham shu Mini App'da so'raladi. Kod va parol bot chatiga yuborilmaydi.
+botning shaxsiy chatida `/start` yuboring. Botdan istalgan foydalanuvchi
+foydalanishi mumkin: har bir odam o'z akkaunti, xabari, chatlari va jadvalini
+alohida boshqaradi. Foydalanuvchilar bir-birining akkaunt sessiyasi yoki
+sozlamalarini ko'rmaydi. **Mini App orqali akkauntni ulash** tugmasini bosib,
+telefon raqamingizni xalqaro formatda kiriting. Telegram yuborgan bir martalik
+login kodini Mini App ichiga yozing; 2FA yoqilgan bo'lsa, parol ham shu Mini
+App'da so'raladi. Kod va parol bot chatiga yuborilmaydi.
 
-Mini App login kodi va 2FA parolini ulanish vaqtida serverga uzatadi. Ulangan
-akkaunt sessiyasi mavjud `TOKEN_SECRET` kaliti bilan shifrlanib MongoDB'da
-saqlanadi. Mini App rozilik tasdig'ini talab qiladi, Telegram `initData` ni
-serverda tekshiradi, login ma'lumotlari log yoki bazaga yozilmaydi. Kalit yo'qolsa
-yoki almashtirilsa, sessiyani tiklab bo'lmaydi. Akkaunt egasi bo'lmagan
-foydalanuvchi akkauntini ulamasligi kerak.
+Mini App login kodi va 2FA parolini ulanish vaqtida serverga uzatadi. Har bir
+foydalanuvchining ulangan akkaunt sessiyasi mavjud `TOKEN_SECRET` kaliti bilan
+shifrlanib alohida MongoDB yozuvida saqlanadi. Mini App rozilik tasdig'ini
+talab qiladi, Telegram `initData` ni serverda tekshiradi, login ma'lumotlari log
+yoki bazaga yozilmaydi. Kalit yo'qolsa yoki almashtirilsa, sessiyani tiklab
+bo'lmaydi. Faqat o'zingizga tegishli akkauntni ulang.
 
 Mini App Telegram ichida ochiladi va ommaviy **HTTPS** manzil talab qiladi.
 Render'da `RENDER_EXTERNAL_URL` avtomatik ishlatiladi; boshqa hostingda

@@ -44,7 +44,7 @@ const BOT_TYPES = Object.freeze({
   },
   "user-scheduler": {
     label: "User Bot — rejalashtirilgan postlar",
-    description: "Telegram akkauntingizni Mini App orqali ulang va a'zo bo'lgan guruh/kanallarga postlarni jadval bilan yuboring.",
+    description: "Har bir foydalanuvchi o'z Telegram akkauntini ulab, o'z jadvali bilan guruh/kanallarga post yuboradi.",
     module: "user-scheduler",
   },
 });

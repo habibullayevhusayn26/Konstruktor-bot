@@ -229,7 +229,12 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
   });
 
   bot.command("cancel", async (ctx) => {
-    if (!isOwner(ctx)) return;
+    if (!isOwner(ctx)) {
+      if (doc.type === "user-scheduler" && await onCancel?.(ctx)) {
+        await ctx.reply("Amal bekor qilindi.");
+      }
+      return;
+    }
     const footerCancelled = await onCancel?.(ctx);
     if (pendingAction) {
       pendingAction = null;

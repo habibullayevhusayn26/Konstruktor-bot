@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const { TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
+const { BotConstructor } = require("../bot-constructor");
 
 const MIN_INTERVAL_SECONDS = 10;
 const MAX_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
@@ -139,7 +140,7 @@ function validateWebAppInitData(initData, botToken, now = Date.now()) {
   return user;
 }
 
-function registerUserScheduler(bot, options) {
+function registerUserSchedulerSession(bot, options) {
   const {
     doc,
     Bots,
@@ -1385,6 +1386,230 @@ function registerUserScheduler(bot, options) {
     async stop() {
       await stopRuntime();
     },
+  };
+}
+
+function registerUserScheduler(bot, options) {
+  const { doc, Bots, UserSchedulerUsers } = options;
+  const createSessionBot = options.createSessionBot ||
+    ((token, botOptions) => new BotConstructor(token, botOptions));
+  const sessions = new Map();
+  const pendingSessions = new Map();
+  let migrationPromise = null;
+  let stopping = false;
+
+  async function migrateLegacyOwnerSession() {
+    if (migrationPromise) return migrationPromise;
+    migrationPromise = (async () => {
+      if (!doc.userSessionEncrypted && !doc.userAccount && !doc.userSchedule) return;
+      const filter = { botId: doc._id, userId: doc.ownerId };
+      const legacySession = {
+        botId: doc._id,
+        userId: doc.ownerId,
+        createdAt: new Date(),
+        ...(
+          doc.userSessionEncrypted
+            ? { userSessionEncrypted: doc.userSessionEncrypted }
+            : {}
+        ),
+        ...(doc.userAccount ? { userAccount: doc.userAccount } : {}),
+        ...(doc.userSchedule ? { userSchedule: doc.userSchedule } : {}),
+      };
+      await UserSchedulerUsers.updateOne(
+        filter,
+        { $setOnInsert: legacySession },
+        { upsert: true },
+      );
+      const result = await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $unset: {
+          userSessionEncrypted: "",
+          userAccount: "",
+          userSchedule: "",
+        } },
+      );
+      if (result?.matchedCount !== 1) {
+        throw new Error("Eski User Bot sozlamalarini yangi saqlash tizimiga ko'chirib bo'lmadi.");
+      }
+      delete doc.userSessionEncrypted;
+      delete doc.userAccount;
+      delete doc.userSchedule;
+    })();
+    return migrationPromise;
+  }
+
+  async function loadOrCreateUserRecord(userId) {
+    const filter = { botId: doc._id, userId };
+    await UserSchedulerUsers.updateOne(
+      filter,
+      {
+        $setOnInsert: {
+          botId: doc._id,
+          userId,
+          userSchedule: { ...EMPTY_SCHEDULE },
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+    const record = await UserSchedulerUsers.findOne(filter);
+    if (!record) throw new Error("Foydalanuvchi sozlamasini bazadan olib bo'lmadi.");
+    return record;
+  }
+
+  async function createUserRuntime(userId, startRuntime = true) {
+    if (!Number.isSafeInteger(userId) || userId < 1) {
+      throw new Error("Telegram foydalanuvchisi ID'si noto'g'ri.");
+    }
+    if (stopping) throw new Error("User Bot hozir to'xtatilmoqda.");
+    await migrateLegacyOwnerSession();
+    const record = await loadOrCreateUserRecord(userId);
+    const sessionDoc = {
+      ...doc,
+      ownerId: userId,
+      userSchedule: record.userSchedule || { ...EMPTY_SCHEDULE },
+    };
+    for (const field of ["userSessionEncrypted", "userAccount"]) {
+      if (record[field] !== undefined) sessionDoc[field] = record[field];
+      else delete sessionDoc[field];
+    }
+    const userBot = createSessionBot(bot.token, bot.options);
+    const sessionCollection = {
+      updateOne: (_filter, update, updateOptions) =>
+        UserSchedulerUsers.updateOne(
+          { botId: doc._id, userId },
+          update,
+          updateOptions,
+        ),
+    };
+    const controls = registerUserSchedulerSession(userBot, {
+      ...options,
+      doc: sessionDoc,
+      Bots: sessionCollection,
+    });
+    const entry = { bot: userBot, controls };
+    try {
+      if (startRuntime) await controls.start();
+    } catch (error) {
+      await controls.stop().catch(() => {});
+      throw error;
+    }
+    sessions.set(userId, entry);
+    return entry;
+  }
+
+  async function getUserRuntime(userId, startRuntime = true) {
+    const existing = sessions.get(userId);
+    if (existing) return existing;
+    const pending = pendingSessions.get(userId);
+    if (pending) return pending;
+    const creation = createUserRuntime(userId, startRuntime);
+    pendingSessions.set(userId, creation);
+    try {
+      return await creation;
+    } finally {
+      if (pendingSessions.get(userId) === creation) pendingSessions.delete(userId);
+    }
+  }
+
+  async function dispatchUpdate(ctx) {
+    if (
+      ctx.chat?.type !== "private" ||
+      !Number.isSafeInteger(ctx.from?.id) ||
+      ctx.from.id < 1
+    ) return;
+    ctx.handled = true;
+    try {
+      const runtime = await getUserRuntime(ctx.from.id);
+      await runtime.bot.processUpdate(ctx.update);
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} ${ctx.from.id} foydalanuvchi so'rovini bajara olmadi:`, error.message);
+      await ctx.reply("User Bot so'rovni bajara olmadi. Birozdan keyin qayta urinib ko'ring.");
+    }
+  }
+
+  bot.command("start", dispatchUpdate);
+  bot.onCallbackData(/^userbot:(.+)$/, dispatchUpdate);
+  bot.onUpdate("message", dispatchUpdate);
+
+  async function start() {
+    await migrateLegacyOwnerSession();
+    const activeRecords = await UserSchedulerUsers.find({
+      botId: doc._id,
+      "userSchedule.enabled": true,
+    }).toArray();
+    for (const record of activeRecords) {
+      await getUserRuntime(Number(record.userId));
+    }
+  }
+
+  async function handleApiRequest(action, body) {
+    const webAppUser = validateWebAppInitData(body.initData, bot.token);
+    const runtime = await getUserRuntime(webAppUser.id);
+    return runtime.controls.handleApiRequest(action, body);
+  }
+
+  async function cancelPending(ctx) {
+    const userId = Number.isSafeInteger(ctx?.from?.id) ? ctx.from.id : doc.ownerId;
+    const userRuntime = sessions.get(userId);
+    return userRuntime ? userRuntime.controls.cancelPending() : false;
+  }
+
+  async function stop() {
+    stopping = true;
+    await Promise.all([...pendingSessions.values()].map((pending) => pending.catch(() => {})));
+    const entries = [...sessions.values()];
+    sessions.clear();
+    const failures = [];
+    for (const entry of entries) {
+      try {
+        await entry.controls.stop();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) {
+      throw new Error(`${failures.length} foydalanuvchi runtime'ini to'xtatib bo'lmadi.`);
+    }
+  }
+
+  async function deleteRuntime() {
+    await migrateLegacyOwnerSession();
+    const records = await UserSchedulerUsers.find({ botId: doc._id }).toArray();
+    const userIds = new Set([
+      ...records.map((record) => Number(record.userId)),
+      ...sessions.keys(),
+    ]);
+    const failures = [];
+    for (const userId of userIds) {
+      let entry;
+      try {
+        entry = await getUserRuntime(userId, false);
+        await entry.controls.delete();
+      } catch (error) {
+        failures.push(error);
+        console.error(`User scheduler ${doc._id} ${userId} sessiyasini uzib bo'lmadi:`, error.message);
+      } finally {
+        if (entry) {
+          await entry.controls.stop().catch((error) => {
+            console.error(`User scheduler ${doc._id} ${userId} runtime to'xtamadi:`, error.message);
+          });
+        }
+      }
+    }
+    sessions.clear();
+    await UserSchedulerUsers.deleteMany({ botId: doc._id });
+    if (failures.length) {
+      throw new Error(`${failures.length} foydalanuvchining Telegram sessiyasini avtomatik uzib bo'lmadi.`);
+    }
+  }
+
+  return {
+    start,
+    stop,
+    delete: deleteRuntime,
+    cancelPending,
+    handleApiRequest,
   };
 }
 

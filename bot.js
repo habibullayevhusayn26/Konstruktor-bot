@@ -104,7 +104,7 @@ const fullAdminRights = () => ({
   can_manage_topics: true,
 });
 
-let Bots, Users, Subs, FooterSettings, WatermarkProfiles;
+let Bots, Users, Subs, FooterSettings, WatermarkProfiles, UserSchedulerUsers;
 let PlatformSettings, Topups, BalanceTransactions, billingService, ConstructorDb;
 let constructorGate = null;
 const getConstructorGateChats = () => {
@@ -176,6 +176,7 @@ async function buildChild(doc) {
     SmmUsers: ConstructorDb.collection(`smm_users_${doc._id}`),
     SmmOrders: ConstructorDb.collection(`smm_orders_${doc._id}`),
     SmmTopups: ConstructorDb.collection(`smm_topups_${doc._id}`),
+    UserSchedulerUsers,
     encryptSecret: encrypt,
     decryptSecret: decrypt,
     publicApiBaseUrl: PUBLIC_API_URL,
@@ -743,12 +744,18 @@ async function main() {
   Bots = mother.collection("bots");
   Users = mother.collection("users");
   Subs = mother.collection("subscribers");
+  UserSchedulerUsers = mother.collection("user_scheduler_users");
   FooterSettings = mother.collection("channel_footer_settings");
   WatermarkProfiles = mother.collection("watermark_profiles");
   PlatformSettings = mother.collection("platform_settings");
   Topups = mother.collection("balance_topups");
   BalanceTransactions = mother.collection("balance_transactions");
   await Subs.createIndex({ botId: 1, userId: 1 }, { unique: true });
+  await UserSchedulerUsers.createIndex(
+    { botId: 1, userId: 1 },
+    { unique: true },
+  );
+  await UserSchedulerUsers.createIndex({ botId: 1, "userSchedule.enabled": 1 });
   await Bots.createIndex({ ownerId: 1 });
   await FooterSettings.createIndex({ botId: 1 }, { unique: true });
   await FooterSettings.createIndex({ channelId: 1 });
@@ -1554,20 +1561,23 @@ async function main() {
     if (!b) return;
     let userSessionWarning = "";
     const activeChild = children.get(b._id);
-    if (b.type === "user-scheduler" && b.userSessionEncrypted) {
-      if (typeof activeChild?.templateControls?.delete === "function") {
-        try {
-          await activeChild.templateControls.delete();
-        } catch (error) {
-          userSessionWarning =
-            "\n\nDiqqat: Telegram sessiyasini avtomatik bekor qilib bo'lmadi. " +
-            "Telegram → Sozlamalar → Qurilmalar bo'limida qo'lda bekor qiling.";
-          console.error(`@${b.username} User Bot sessiyasi bekor qilinmadi:`, error.message);
-        }
-      } else {
+    if (b.type === "user-scheduler") {
+      let cleanupChild = activeChild;
+      try {
+        if (!cleanupChild) cleanupChild = await buildChild(b);
+        await cleanupChild.templateControls?.delete?.();
+      } catch (error) {
         userSessionWarning =
-          "\n\nDiqqat: Telegram sessiyasini avtomatik bekor qilib bo'lmadi. " +
-          "Telegram → Sozlamalar → Qurilmalar bo'limida qo'lda bekor qiling.";
+          "\n\nDiqqat: ayrim Telegram sessiyalarini avtomatik bekor qilib bo'lmadi. " +
+          "Telegram → Sozlamalar → Qurilmalar bo'limida ularni qo'lda bekor qiling.";
+        console.error(`@${b.username} User Bot sessiyalari bekor qilinmadi:`, error.message);
+      } finally {
+        if (cleanupChild && cleanupChild !== activeChild) {
+          await cleanupChild.templateControls?.stop?.().catch((error) => {
+            console.error(`@${b.username} User Bot runtime to'xtamadi:`, error.message);
+          });
+        }
+        await UserSchedulerUsers.deleteMany({ botId: b._id });
       }
     }
     stopChild(b._id);
@@ -2336,7 +2346,7 @@ async function main() {
                       : doc.type === "guard"
                         ? "✅ Telegram Qorovul Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botni guruhga qo'shib administrator qiling va guruh egasi /claim buyrug'ini yuborsin."
                         : doc.type === "user-scheduler"
-                          ? "✅ User Bot yaratildi. 3 kunlik bepul sinov boshlandi. Botda /start yuborib, Mini App orqali Telegram akkauntingizni ulang."
+                          ? "✅ User Bot yaratildi. 3 kunlik bepul sinov boshlandi. Har bir foydalanuvchi /start yuborib, Mini App orqali o'z Telegram akkauntini ulashi mumkin."
                         : "✅ Tayyor bot yaratildi. 3 kunlik bepul sinov boshlandi. Sozlash shart emas.",
             );
             await ctx.reply(

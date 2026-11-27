@@ -2042,3 +2042,30 @@ test("bot admin panel rejects non-owners and lets owner set channel", async () =
   assert.match(replies.at(-1), /Majburiy kanal sozlandi/);
   assert.ok(edits.length > 0);
 });
+
+test("non-owner users can cancel their own User Bot input", async () => {
+  const bot = new BotConstructor("test-token");
+  const cancelledUsers = [];
+  const replies = [];
+  bot.sendMessage = async (_chatId, text) => replies.push(text);
+  registerAdminPanel(bot, {
+    doc: { _id: 789, ownerId: 55, username: "user_bot", type: "user-scheduler" },
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    Subs: { countDocuments: async () => 0 },
+    onCancel: async (ctx) => {
+      cancelledUsers.push(ctx.from.id);
+      return true;
+    },
+  });
+
+  await bot.processUpdate({
+    message: {
+      chat: { id: 90, type: "private" },
+      from: { id: 90 },
+      text: "/cancel",
+    },
+  });
+
+  assert.deepEqual(cancelledUsers, [90]);
+  assert.deepEqual(replies, ["Amal bekor qilindi."]);
+});
