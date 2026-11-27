@@ -1,7 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const { TelegramClient } = require("teleproto");
+const { Api, TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 const { NewMessage } = require("teleproto/events");
 const { BotConstructor } = require("../bot-constructor");
@@ -72,6 +72,13 @@ function httpError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function normalizePhoneNumber(value) {
+  let normalized = String(value || "").replace(/[^\d+]/g, "");
+  normalized = normalized.replace(/(?!^)\+/g, "");
+  if (/^\d{9,15}$/.test(normalized)) normalized = `+${normalized}`;
+  return normalized;
 }
 
 function buildMiniAppUrl(publicApiBaseUrl, botId) {
@@ -412,6 +419,77 @@ function registerUserSchedulerSession(bot, options) {
     return "xabar";
   }
 
+  function convertFormattingEntities(entities) {
+    if (!Array.isArray(entities)) return [];
+    const converted = [];
+    for (const entity of entities) {
+      if (!entity || !Number.isInteger(entity.offset) || !Number.isInteger(entity.length)) continue;
+      const params = { offset: entity.offset, length: entity.length };
+      let convertedEntity;
+      switch (entity.type) {
+        case "bold":
+          convertedEntity = new Api.MessageEntityBold(params);
+          break;
+        case "italic":
+          convertedEntity = new Api.MessageEntityItalic(params);
+          break;
+        case "underline":
+          convertedEntity = new Api.MessageEntityUnderline(params);
+          break;
+        case "strikethrough":
+          convertedEntity = new Api.MessageEntityStrike(params);
+          break;
+        case "code":
+          convertedEntity = new Api.MessageEntityCode(params);
+          break;
+        case "pre":
+          convertedEntity = new Api.MessageEntityPre({ ...params, language: entity.language || "" });
+          break;
+        case "text_link":
+          convertedEntity = new Api.MessageEntityTextUrl({ ...params, url: entity.url || "" });
+          break;
+        case "text_mention":
+          convertedEntity = new Api.MessageEntityMentionName({
+            ...params,
+            userId: entity.user?.id,
+          });
+          break;
+        case "custom_emoji":
+          convertedEntity = new Api.MessageEntityCustomEmoji({
+            ...params,
+            documentId: String(entity.custom_emoji_id),
+          });
+          break;
+        case "spoiler":
+          convertedEntity = new Api.MessageEntitySpoiler(params);
+          break;
+        default:
+          continue;
+      }
+      converted.push(convertedEntity);
+    }
+    return converted;
+  }
+
+  function convertReplyMarkup(replyMarkup) {
+    if (!Array.isArray(replyMarkup?.inline_keyboard)) return undefined;
+    const rows = replyMarkup.inline_keyboard.map((row) =>
+      row.map((button) => {
+        if (button.url) {
+          return new Api.KeyboardButtonUrl({ text: button.text, url: button.url });
+        }
+        if (button.callback_data) {
+          return new Api.KeyboardButtonCallback({
+            text: button.text,
+            data: Buffer.from(button.callback_data, "utf8"),
+          });
+        }
+        return null;
+      }).filter(Boolean),
+    ).filter((row) => row.length);
+    return rows.length ? rows : undefined;
+  }
+
   function isForwardedFromAnotherUser(message) {
     const origin = message.forward_origin;
     const fromUserId = origin?.type === "user"
@@ -453,14 +531,15 @@ function registerUserSchedulerSession(bot, options) {
             : typeof message.caption === "string"
               ? message.caption
               : "";
-        const description = text
-          ? "matn"
-          : message.photo
-            ? "rasm"
-            : message.video
-              ? "video"
-              : message.document
-                ? "fayl"
+        const mediaClassName = message.media?.className || "";
+        const description = mediaClassName.includes("Photo")
+          ? "rasm"
+          : mediaClassName.includes("Video")
+            ? "video"
+            : mediaClassName.includes("Document")
+              ? "fayl"
+              : text
+                ? "matn"
                 : "xabar";
         const signature = `${description}:${text.slice(0, 512)}`;
         const refs = mtprotoMessageRefs.get(signature) || [];
@@ -505,6 +584,8 @@ function registerUserSchedulerSession(bot, options) {
       typeof schedule.messageRef.text === "string" &&
       schedule.messageRef.text
     ) {
+      const formattingEntities = convertFormattingEntities(schedule.messageRef.entities);
+      const buttons = convertReplyMarkup(schedule.messageRef.replyMarkup);
       if (schedule.messageRef.forwarded) {
         const sourcePeer = await getSourceBotPeer();
         const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
@@ -523,7 +604,11 @@ function registerUserSchedulerSession(bot, options) {
           }
         }
       }
-      await userClient.sendMessage(target, { message: schedule.messageRef.text });
+      await userClient.sendMessage(target, {
+        message: schedule.messageRef.text,
+        formattingEntities,
+        ...(buttons ? { buttons } : {}),
+      });
       return;
     }
     const sourcePeer = await getSourceBotPeer();
@@ -542,8 +627,18 @@ function registerUserSchedulerSession(bot, options) {
           `User scheduler ${doc._id} manba xabarini tekshira olmadi:`,
           error?.message || error?.errorMessage || error?.name,
         );
-        if (typeof schedule.messageRef.text === "string" && schedule.messageRef.text) {
-          await userClient.sendMessage(target, { message: schedule.messageRef.text });
+        if (
+          schedule.messageRef.description === "matn" &&
+          typeof schedule.messageRef.text === "string" &&
+          schedule.messageRef.text
+        ) {
+          await userClient.sendMessage(target, {
+            message: schedule.messageRef.text,
+            formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
+            ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
+              ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
+              : {}),
+          });
           return;
         }
         throw error;
@@ -552,8 +647,17 @@ function registerUserSchedulerSession(bot, options) {
         .filter((message) => message && Number.isSafeInteger(message.id))
         .map((message) => message.id);
       if (!validIds.length) {
-        if (schedule.messageRef.text) {
-          await userClient.sendMessage(target, { message: schedule.messageRef.text });
+        if (
+          schedule.messageRef.description === "matn" &&
+          schedule.messageRef.text
+        ) {
+          await userClient.sendMessage(target, {
+            message: schedule.messageRef.text,
+            formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
+            ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
+              ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
+              : {}),
+          });
           return;
         }
         throw new Error(
@@ -562,8 +666,17 @@ function registerUserSchedulerSession(bot, options) {
       }
       for (let index = 0; index < messageIds.length; index++) {
         if (!validIds.includes(messageIds[index])) {
-          if (schedule.messageRef.text) {
-            await userClient.sendMessage(target, { message: schedule.messageRef.text });
+          if (
+            schedule.messageRef.description === "matn" &&
+            schedule.messageRef.text
+          ) {
+            await userClient.sendMessage(target, {
+              message: schedule.messageRef.text,
+              formattingEntities: convertFormattingEntities(schedule.messageRef.entities),
+              ...(convertReplyMarkup(schedule.messageRef.replyMarkup)
+                ? { buttons: convertReplyMarkup(schedule.messageRef.replyMarkup) }
+                : {}),
+            });
             return;
           }
           throw new Error(
@@ -1112,7 +1225,7 @@ function registerUserSchedulerSession(bot, options) {
       if (body.consent !== true) {
         throw httpError("Akkaunt ulash roziligi tasdiqlanishi kerak.", 400);
       }
-      const phoneNumber = typeof body.phoneNumber === "string" ? body.phoneNumber.trim() : "";
+      const phoneNumber = normalizePhoneNumber(body.phoneNumber);
       if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
         throw httpError("Telefon raqamini xalqaro formatda kiriting, masalan +998901234567.", 400);
       }
@@ -1402,6 +1515,14 @@ function registerUserSchedulerSession(bot, options) {
 
   async function saveMessageReference(ctx, messageRef, notify = true) {
     try {
+      const sourceMessage = ctx.message;
+      if (sourceMessage) {
+        messageRef.entities =
+          sourceMessage.entities ||
+          sourceMessage.caption_entities ||
+          [];
+        messageRef.replyMarkup = sourceMessage.reply_markup || null;
+      }
       if (typeof userClient?.getSourceBotPeer === "function") {
         await getSourceBotPeer();
       } else if (userClient) {
@@ -1797,6 +1918,7 @@ module.exports = Object.assign(registerUserScheduler, {
   buildMiniAppUrl,
   formatInterval,
   getDialogKind,
+  normalizePhoneNumber,
   parseInterval,
   registerUserScheduler,
   validateWebAppInitData,

@@ -12,14 +12,7 @@
     emailCode: document.getElementById("email-code-form"),
   };
   const cancelButton = document.getElementById("cancel");
-  const screenTitle = document.getElementById("screen-title");
-  const otpBoxes = [...document.querySelectorAll(".otp-box")];
-  const codeInput = document.getElementById("code");
-  const resendCodeButton = document.getElementById("resend-code");
-  let lastPhoneNumber = "";
   let polling = false;
-  let phase = "idle";
-  let previousPhase = "";
 
   if (!telegram || !telegram.initData || !appMatch) {
     statusElement.textContent = "Mini App’ni Telegram ichida oching.";
@@ -32,6 +25,13 @@
   const botId = appMatch[1];
   const pathPrefix = window.location.pathname.replace(/\/user-scheduler\/app\/\d+\/?$/, "");
   const apiBase = `${pathPrefix}/user-scheduler/api/${botId}`;
+
+  function normalizePhoneNumber(value) {
+    let normalized = String(value || "").replace(/[^\d+]/g, "");
+    normalized = normalized.replace(/(?!^)\+/g, "");
+    if (/^\d{9,15}$/.test(normalized)) normalized = `+${normalized}`;
+    return normalized;
+  }
 
   function setVisibleForm(name) {
     for (const [key, form] of Object.entries(forms)) form.hidden = key !== name;
@@ -55,84 +55,45 @@
     return result;
   }
 
-  function syncOtpInput() {
-    codeInput.value = otpBoxes.map((box) => box.value).join("");
-  }
-
-  otpBoxes.forEach((box, index) => {
-    box.addEventListener("input", () => {
-      box.value = box.value.replace(/\D/g, "").slice(-1);
-      syncOtpInput();
-      if (box.value && index < otpBoxes.length - 1) otpBoxes[index + 1].focus();
-    });
-    box.addEventListener("keydown", (event) => {
-      if (event.key === "Backspace" && !box.value && index > 0) {
-        otpBoxes[index - 1].focus();
-      }
-    });
-    box.addEventListener("paste", (event) => {
-      const digits = event.clipboardData?.getData("text").replace(/\D/g, "") || "";
-      if (!digits) return;
-      event.preventDefault();
-      for (let offset = 0; offset < otpBoxes.length; offset++) {
-        otpBoxes[offset].value = digits[offset] || "";
-      }
-      syncOtpInput();
-      otpBoxes[Math.min(digits.length, otpBoxes.length) - 1]?.focus();
-    });
-  });
-
   function updateView(state) {
-    phase = state.phase || "error";
     statusElement.textContent = state.message || "Ulanish holati yangilanmoqda.";
     setVisibleForm(null);
-    cancelButton.hidden = !["connecting", "processing", "code", "password", "email", "email-code"].includes(phase);
+    cancelButton.hidden = !["connecting", "processing", "code", "password", "email", "email-code"].includes(state.phase);
 
-    if (phase === "idle" || phase === "error" || phase === "cancelled") {
-      screenTitle.textContent = "OTP Verification UI";
+    if (state.phase === "idle" || state.phase === "error" || state.phase === "cancelled") {
       setVisibleForm("phone");
       polling = false;
       return;
     }
-    if (phase === "code") {
-      screenTitle.textContent = "OTP Verification UI";
+    if (state.phase === "code") {
       setVisibleForm("code");
-      if (previousPhase !== "code") {
-        otpBoxes.forEach((box) => { box.value = ""; });
-        otpBoxes[0].focus();
-      }
-    } else if (phase === "password") {
-      screenTitle.textContent = "2FA Verification";
+      document.getElementById("code").focus();
+    } else if (state.phase === "password") {
       setVisibleForm("password");
       document.getElementById("password-hint").textContent =
         state.passwordHint ? `Telegram parol ishorasi: ${state.passwordHint}` : "";
       document.getElementById("password").focus();
-    } else if (phase === "email") {
-      screenTitle.textContent = "Email Verification";
+    } else if (state.phase === "email") {
       setVisibleForm("email");
       document.getElementById("email").focus();
-    } else if (phase === "email-code") {
-      screenTitle.textContent = "Email Verification";
+    } else if (state.phase === "email-code") {
       setVisibleForm("emailCode");
       document.getElementById("email-hint").textContent =
         state.emailPattern ? `Kod shu manzilga yuborildi: ${state.emailPattern}` : "Emailingizdagi Telegram kodini kiriting.";
       document.getElementById("email-code").focus();
-    } else if (phase === "success") {
-      screenTitle.textContent = "Account Connected";
+    } else if (state.phase === "success") {
       polling = false;
       cancelButton.hidden = true;
       window.setTimeout(() => telegram.close(), 1800);
-    } else if (phase === "connected") {
+    } else if (state.phase === "connected") {
       polling = false;
       cancelButton.hidden = true;
     }
-    previousPhase = phase;
   }
 
   async function refreshStatus() {
     try {
-      const state = await request("status");
-      updateView(state);
+      updateView(await request("status"));
     } catch (error) {
       statusElement.textContent = error.message;
       polling = false;
@@ -146,8 +107,7 @@
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
       if (!polling) break;
       try {
-        const state = await request("status");
-        updateView(state);
+        updateView(await request("status"));
       } catch (error) {
         statusElement.textContent = error.message;
         polling = false;
@@ -179,13 +139,11 @@
   forms.phone.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!document.getElementById("consent").checked) return;
+    const phoneNumber = normalizePhoneNumber(document.getElementById("phone").value);
+    document.getElementById("phone").value = phoneNumber;
     statusElement.textContent = "Telegram login kodi so'ralmoqda...";
-    lastPhoneNumber = document.getElementById("phone").value.trim();
     try {
-      const state = await request("start", {
-        phoneNumber: lastPhoneNumber,
-        consent: true,
-      });
+      const state = await request("start", { phoneNumber, consent: true });
       updateView(state);
       if (["connecting", "processing", "code", "password", "email", "email-code"].includes(state.phase)) {
         void pollStatus();
@@ -197,13 +155,9 @@
 
   forms.code.addEventListener("submit", (event) => {
     event.preventDefault();
-    syncOtpInput();
-    const value = codeInput.value.trim();
-    if (!/^\d{3,12}$/.test(value)) {
-      statusElement.textContent = "Barcha kod raqamlarini kiriting.";
-      otpBoxes.find((box) => !box.value)?.focus();
-      return;
-    }
+    const input = document.getElementById("code");
+    const value = input.value.trim();
+    input.value = "";
     void submit("code", value);
   });
 
@@ -237,29 +191,6 @@
       updateView(await request("cancel"));
     } catch (error) {
       statusElement.textContent = error.message;
-    }
-  });
-
-  resendCodeButton.addEventListener("click", async () => {
-    if (!lastPhoneNumber) {
-      statusElement.textContent = "Avval telefon raqamini kiriting.";
-      return;
-    }
-    resendCodeButton.disabled = true;
-    try {
-      await request("cancel");
-      const state = await request("start", {
-        phoneNumber: lastPhoneNumber,
-        consent: true,
-      });
-      updateView(state);
-      if (["connecting", "processing", "code", "password", "email", "email-code"].includes(state.phase)) {
-        void pollStatus();
-      }
-    } catch (error) {
-      statusElement.textContent = error.message;
-    } finally {
-      resendCodeButton.disabled = false;
     }
   });
 

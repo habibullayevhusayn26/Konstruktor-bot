@@ -9,6 +9,7 @@ const {
   buildMiniAppUrl,
   formatInterval,
   getDialogKind,
+  normalizePhoneNumber,
   parseInterval,
   registerUserScheduler,
   validateWebAppInitData,
@@ -131,7 +132,7 @@ test("Mini App URL requires HTTPS and preserves the configured path prefix", () 
   assert.equal(buildMiniAppUrl("https://maker.example?key=value", 123456), null);
 });
 
-test("Mini App login UI uses the OTP verification visual layout", () => {
+test("Mini App login UI keeps the original layout", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const html = fs.readFileSync(
@@ -142,12 +143,16 @@ test("Mini App login UI uses the OTP verification visual layout", () => {
     path.join(__dirname, "..", "bots", "user-scheduler", "mini-app.js"),
     "utf8",
   );
-  assert.match(html, /OTP Verification UI/);
-  assert.match(html, /id="otp-row"/);
-  assert.equal((html.match(/class="otp-box"/g) || []).length, 6);
-  assert.match(html, /linear-gradient\(145deg/);
-  assert.match(script, /otpBoxes/);
-  assert.match(script, /resendCodeButton/);
+  assert.match(html, /Telegram akkauntni ulash/);
+  assert.match(html, /Telefon raqami/);
+  assert.doesNotMatch(html, /OTP Verification UI/);
+  assert.doesNotMatch(script, /otp-box/);
+});
+
+test("phone numbers with spaces are normalized before login", () => {
+  assert.equal(normalizePhoneNumber("+998 90 123 45 67"), "+998901234567");
+  assert.equal(normalizePhoneNumber("998 90-123-45-67"), "+998901234567");
+  assert.equal(normalizePhoneNumber("+1 (415) 555 0123"), "+14155550123");
 });
 
 test("Mini App initData verifies Telegram signatures, owner data, and freshness", () => {
@@ -436,6 +441,8 @@ test("user scheduler stores media and forwarding details from the submitted Tele
     forwarded: true,
     description: "rasm",
     text: "caption",
+    entities: [],
+    replyMarkup: null,
   });
   assert.equal(userRecords.get("123456:77").userSchedule.message, "");
   assert.match(replies[1].text, /Xabar jadval uchun saqlandi/);
@@ -575,6 +582,12 @@ test("text schedules send directly even if source MTProto copy validation fails"
           forwarded: false,
           description: "matn",
           text: "Oddiy matn xabari",
+          entities: [{
+            type: "custom_emoji",
+            offset: 0,
+            length: 1,
+            custom_emoji_id: "5260726538302660868",
+          }],
         },
         intervalSeconds: 10,
         chatIds: ["peer-1"],
@@ -613,7 +626,9 @@ test("text schedules send directly even if source MTProto copy validation fails"
     await runtime.start();
     await sendCalled;
     assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0].params, { message: "Oddiy matn xabari" });
+    assert.equal(sent[0].params.message, "Oddiy matn xabari");
+    assert.equal(sent[0].params.formattingEntities[0].className, "MessageEntityCustomEmoji");
+    assert.equal(String(sent[0].params.formattingEntities[0].documentId), "5260726538302660868");
     await runtime.stop();
   } finally {
     if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
