@@ -22,7 +22,7 @@ function signedInitData(botToken, userId, authDate = Math.floor(Date.now() / 100
     signature: "third-party-signature",
   });
   const dataCheckString = [...params.entries()]
-    .filter(([key]) => key !== "signature")
+    .filter(([key]) => key !== "hash")
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
@@ -63,6 +63,12 @@ test("Mini App initData verifies Telegram signatures, owner data, and freshness"
   const valid = signedInitData(token, 77, Math.floor(now / 1000));
   assert.deepEqual(validateWebAppInitData(valid, token, now), { id: 77 });
   assert.throws(() => validateWebAppInitData(valid, "wrong-token", now), /noto'g'ri/);
+  const changedSignature = new URLSearchParams(valid);
+  changedSignature.set("signature", "changed");
+  assert.throws(
+    () => validateWebAppInitData(changedSignature.toString(), token, now),
+    /noto'g'ri/,
+  );
 
   const stale = signedInitData(token, 77, Math.floor(now / 1000) - 11 * 60);
   assert.throws(() => validateWebAppInitData(stale, token, now), /eskirgan/);

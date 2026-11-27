@@ -107,7 +107,7 @@ function validateWebAppInitData(initData, botToken, now = Date.now()) {
   }
 
   const dataCheckString = [...params.entries()]
-    .filter(([key]) => key !== "hash" && key !== "signature")
+    .filter(([key]) => key !== "hash")
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
