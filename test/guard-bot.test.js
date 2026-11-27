@@ -7,9 +7,11 @@ const { BOT_TYPES } = require("../bots/generated-file");
 const { getBillingSettings } = require("../billing");
 const {
   formatWelcome,
+  groupKeyboard,
   hasBlockedWord,
   hasLink,
   isForwardedAdvertisement,
+  panelKeyboard,
   parseBannedWords,
   validateFloodSettings,
 } = require("../bots/guard-bot");
@@ -23,6 +25,22 @@ test("guard bot is available in the maker market and billing settings", () => {
     monthly: 1000,
     enabled: true,
   });
+});
+
+test("private admin panel has group selection, add-group, and settings navigation", () => {
+  const groups = panelKeyboard([
+    { chatId: "-100123", title: "Test group", owner: true },
+  ], "guard_bot").inline_keyboard;
+  assert.equal(groups[0][0].text, "Egasi · Test group");
+  assert.equal(groups[0][0].style, "primary");
+  assert.equal(groups[1][0].url, "https://t.me/guard_bot?startgroup=true");
+
+  const settings = groupKeyboard({
+    chatId: "-100123",
+    captchaEnabled: true,
+  }).inline_keyboard;
+  assert.ok(settings.flat().some((button) => button.callback_data === "guard:groups"));
+  assert.ok(settings.flat().every((button) => button.style));
 });
 
 test("guard SQLite storage isolates groups, admins, warnings, and daily stats", () => {

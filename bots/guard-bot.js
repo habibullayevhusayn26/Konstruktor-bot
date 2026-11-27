@@ -56,18 +56,21 @@ function parseBannedWords(value) {
   return [...new Set(words.map((word) => word.toLocaleLowerCase()))];
 }
 
-function panelKeyboard(groups) {
+function panelKeyboard(groups, username) {
   const keyboard = new InlineKeyboard();
   if (groups.length) {
     groups.forEach((group) => {
       keyboard.add({
-        text: `${group.owner ? "Sizning guruhingiz: " : ""}${group.title}`.slice(0, 64),
+        text: `${group.owner ? "Egasi · " : "Admin · "}${group.title}`.slice(0, 64),
         callback_data: `guard:group:${group.chatId}`,
         style: "primary",
       }).row();
     });
   }
-  keyboard.add(emojiButton("group", "Guruhni yangilash", "guard:groups", "success"));
+  keyboard
+    .url("Guruhga qo'shish", `https://t.me/${username}?startgroup=true`)
+    .row()
+    .add(emojiButton("group", "Guruhlarni yangilash", "guard:groups", "success"));
   return keyboard;
 }
 
@@ -90,7 +93,7 @@ function groupKeyboard(group) {
     .row()
     .add(emojiButton("admin", "Adminlar", `guard:admins:${group.chatId}`, "primary"))
     .row()
-    .text({ text: "Guruhlar", callback_data: "guard:groups", style: "danger" });
+    .add({ text: "Guruhlar ro'yxati", callback_data: "guard:groups", style: "primary" });
 }
 
 function addAdminKeyboard(group, admins) {
@@ -104,9 +107,9 @@ function addAdminKeyboard(group, admins) {
     )).row();
   });
   return keyboard
-    .text({ text: "Admin qo'shish", callback_data: `guard:add-admin:${group.chatId}`, style: "success" })
+    .add({ text: "Admin qo'shish", callback_data: `guard:add-admin:${group.chatId}`, style: "success" })
     .row()
-    .text({
+    .add({
       text: "Sozlamalar",
       callback_data: `guard:group:${group.chatId}`,
       style: "primary",
@@ -195,13 +198,20 @@ function createGuardBot(token, { botId, database }) {
 
   const renderGroups = async (ctx, edit = false) => {
     const groups = await database.listGroups(botId, ctx.from.id);
+    const username = bot.botInfo.username;
     if (!groups.length) {
       const formatted = messageWithEmoji(
         "panel",
-        "Hozircha boshqariladigan guruh yo'q. Guruhda botni administrator qiling va guruh egasi /claim buyrug'ini yuborsin.",
+        `Xush kelibsiz, ${ctx.from.first_name || "admin"}!\n\n` +
+          "Guruhlaringizni shu shaxsiy paneldan boshqaring.\n\n" +
+          "Boshlash tartibi:\n" +
+          "1. Botni guruhga qo'shib, administrator qiling.\n" +
+          "2. Guruh egasi guruhda /claim yuborsin.\n" +
+          "3. Shu panelga qaytib, guruhni tanlang.\n\n" +
+          "Kerakli huquqlar: xabarlarni o'chirish va a'zolarni cheklash.",
       );
       const options = {
-        reply_markup: panelKeyboard([]),
+        reply_markup: panelKeyboard([], username),
         ...(formatted.entities ? { entities: formatted.entities } : {}),
       };
       return edit
@@ -212,9 +222,15 @@ function createGuardBot(token, { botId, database }) {
       ...group,
       owner: group.ownerId === ctx.from.id,
     }));
-    const formatted = messageWithEmoji("panel", "Boshqarish uchun guruhni tanlang:");
+    const formatted = messageWithEmoji(
+      "panel",
+      `BOSHQARUV PANELI\n\n` +
+        `${ctx.from.first_name || "Admin"}, xush kelibsiz.\n` +
+        `Siz ${marked.length} ta guruhni boshqara olasiz.\n\n` +
+        "Davom etish uchun guruhni tanlang.",
+    );
     const options = {
-      reply_markup: panelKeyboard(marked),
+      reply_markup: panelKeyboard(marked, username),
       ...(formatted.entities ? { entities: formatted.entities } : {}),
     };
     return edit
@@ -224,10 +240,12 @@ function createGuardBot(token, { botId, database }) {
 
   const renderGroup = (ctx, group, edit = true) => {
     ctx.session.selectedChatId = group.chatId;
-    const text = `${group.title}\n\n` +
-      `Captcha: ${group.captchaEnabled ? "yoqilgan" : "o'chirilgan"}\n` +
-      `Flood: ${group.floodLimit} xabar / ${group.floodWindowSeconds} soniya\n` +
-      `Taqiqlangan so'zlar: ${group.bannedWords.length}`;
+    const role = group.ownerId === ctx.from.id ? "Guruh egasi" : "Panel administratori";
+    const text = `GURUH SOZLAMALARI\n\n${group.title}\n${role}\n\n` +
+      `Captcha: ${group.captchaEnabled ? "Faol" : "O'chirilgan"}\n` +
+      `Flood himoyasi: ${group.floodLimit} xabar / ${group.floodWindowSeconds} soniya\n` +
+      `Taqiqlangan so'zlar: ${group.bannedWords.length}\n\n` +
+      "Bo'limni tanlab, sozlamani yangilang.";
     return edit
       ? ctx.editMessageText(text, { reply_markup: groupKeyboard(group) })
       : ctx.reply(text, { reply_markup: groupKeyboard(group) });
@@ -374,7 +392,17 @@ function createGuardBot(token, { botId, database }) {
       ctx.from.id,
     );
     groupCache.set(String(ctx.chat.id), { group: claimed, expiresAt: Date.now() + 10_000 });
-    await sendEmoji(ctx, "panel", "Guruh muvaffaqiyatli ro'yxatdan o'tkazildi. Boshqaruv uchun botga shaxsiy chatda /start yuboring.");
+    await sendEmoji(
+      ctx,
+      "panel",
+      "Guruh ro'yxatdan o'tdi. Shaxsiy admin panelini ochib, sozlamalarni boshqaring.",
+      {
+        reply_markup: new InlineKeyboard().url(
+          "Shaxsiy admin panelini ochish",
+          `https://t.me/${bot.botInfo.username}?start=admin`,
+        ),
+      },
+    );
   });
 
   bot.command("start", async (ctx) => {
@@ -392,8 +420,20 @@ function createGuardBot(token, { botId, database }) {
   });
 
   bot.command("cancel", async (ctx) => {
-    if (ctx.chat.type === "private") ctx.session.inputMode = null;
-    await ctx.reply("Kiritish bekor qilindi.");
+    if (ctx.chat.type === "private") {
+      const inputMode = ctx.session.inputMode;
+      ctx.session.inputMode = null;
+      if (inputMode) {
+        const group = await getPanelGroup(ctx, inputMode.chatId);
+        if (group) {
+          await ctx.reply("Kiritish bekor qilindi. Guruh sozlamalari:", {
+            reply_markup: groupKeyboard(group),
+          });
+          return;
+        }
+      }
+    }
+    await ctx.reply("Amal bekor qilindi.");
   });
 
   bot.command("warn", async (ctx) => {
@@ -582,7 +622,13 @@ function createGuardBot(token, { botId, database }) {
           reply_markup: groupKeyboard(updated),
         });
       } catch (error) {
-        await ctx.reply(error.message);
+        await sendEmoji(ctx, "warn", error.message, {
+          reply_markup: new InlineKeyboard().add({
+            text: "Guruh sozlamalariga qaytish",
+            callback_data: `guard:group:${chatId}`,
+            style: "danger",
+          }),
+        });
       }
       return;
     }
@@ -653,16 +699,30 @@ function createGuardBot(token, { botId, database }) {
       await renderGroup(ctx, updated);
     } else if (parts[1] === "welcome" || parts[1] === "words" || parts[1] === "flood") {
       const prompts = {
-        welcome: `Yangi xush kelibsiz xabarini yuboring (maksimum 1000 belgi). {name} va {group} o'zgaruvchilari ishlaydi.\nHozirgi matn:\n${group.welcomeText}`,
-        words: `Taqiqlangan so'zlarni vergul yoki yangi qator bilan ajratib yuboring. O'chirish uchun /clear yuboring.\nHozir: ${group.bannedWords.join(", ") || "yo'q"}`,
-        flood: `Flood chegarasini "xabarlar/soniya" formatida yuboring (3–30 / 3–120).\nHozir: ${group.floodLimit}/${group.floodWindowSeconds}`,
+        welcome:
+          `XUSH KELIBSIZ XABARI\n\n` +
+          `Yangi matn yuboring (1000 belgigacha).\n` +
+          `O'zgaruvchilar: {name}, {group}\n` +
+          `Hozirgi matn: ${group.welcomeText.slice(0, 900)}\n\n` +
+          "Bekor qilish uchun /cancel yuboring.",
+        words:
+          `TA'QIQLANGAN SO'ZLAR\n\n` +
+          "So'zlarni vergul yoki yangi qatordan ajrating.\n" +
+          `Hozir: ${group.bannedWords.join(", ").slice(0, 1000) || "kiritilmagan"}\n\n` +
+          "Ro'yxatni tozalash: /clear\nBekor qilish: /cancel",
+        flood:
+          `FLOOD HIMOYASI\n\n` +
+          `Format: xabarlar/soniya (masalan, 5/10).\n` +
+          `Ruxsat etilgan: 3–30 xabar, 3–120 soniya.\n` +
+          `Hozirgi qiymat: ${group.floodLimit}/${group.floodWindowSeconds}\n\n` +
+          "Bekor qilish uchun /cancel yuboring.",
       };
       ctx.session.inputMode = {
         type: parts[1],
         chatId: group.chatId,
       };
       await ctx.editMessageText(prompts[parts[1]], {
-        reply_markup: new InlineKeyboard().text({
+        reply_markup: new InlineKeyboard().add({
           text: "Orqaga",
           callback_data: `guard:group:${group.chatId}`,
           style: "danger",
@@ -672,13 +732,18 @@ function createGuardBot(token, { botId, database }) {
       const stats = await database.getStats(botId, chatId);
       const formatted = messageWithEmoji(
         "stats",
-        `So'nggi 24 soat:\n${stats.bans} ban · ${stats.mutes} mute · ${stats.kicks} kick\n` +
-          `${stats.warnings} ta ogohlantirish\nBugungi faollik: ${stats.dailyActivity} xabar`,
+        `STATISTIKA\n${group.title}\n\n` +
+          `So'nggi 24 soat:\n` +
+          `• Ban: ${stats.bans}\n` +
+          `• Mute: ${stats.mutes}\n` +
+          `• Kick: ${stats.kicks}\n` +
+          `• Ogohlantirish: ${stats.warnings}\n\n` +
+          `Bugungi xabarlar: ${stats.dailyActivity}`,
       );
       await ctx.editMessageText(
         formatted.text,
         {
-          reply_markup: new InlineKeyboard().text({
+          reply_markup: new InlineKeyboard().add({
             text: "Sozlamalar",
             callback_data: `guard:group:${chatId}`,
             style: "primary",
@@ -689,11 +754,13 @@ function createGuardBot(token, { botId, database }) {
     } else if (parts[1] === "admins") {
       const admins = await database.listAdmins(botId, chatId);
       const text = group.ownerId === ctx.from.id
-        ? `Qo'shimcha adminlar:\n${admins.map((admin) => admin.userId).join("\n") || "Hozircha yo'q"}`
+        ? `QO'SHIMCHA ADMINLAR\n${group.title}\n\n` +
+          `${admins.map((admin) => `• ${admin.userId}`).join("\n") || "Hozircha qo'shimcha admin yo'q."}\n\n` +
+          "Panel adminlari bot sozlamalarini boshqara oladi."
         : "Qo'shimcha adminlarni faqat guruh egasi boshqara oladi.";
       const keyboard = group.ownerId === ctx.from.id
         ? addAdminKeyboard(group, admins)
-        : new InlineKeyboard().text({
+        : new InlineKeyboard().add({
             text: "Sozlamalar",
             callback_data: `guard:group:${chatId}`,
             style: "primary",
@@ -706,7 +773,7 @@ function createGuardBot(token, { botId, database }) {
       }
       ctx.session.inputMode = { type: "add-admin", chatId: group.chatId };
       await ctx.editMessageText("Qo'shimcha adminning Telegram ID raqamini yuboring.", {
-        reply_markup: new InlineKeyboard().text({
+        reply_markup: new InlineKeyboard().add({
           text: "Orqaga",
           callback_data: `guard:admins:${chatId}`,
           style: "danger",
@@ -722,7 +789,9 @@ function createGuardBot(token, { botId, database }) {
       panelAdminCache.delete(String(chatId));
       const admins = await database.listAdmins(botId, chatId);
       await ctx.editMessageText(
-        `Qo'shimcha adminlar:\n${admins.map((admin) => admin.userId).join("\n") || "Hozircha yo'q"}`,
+        `QO'SHIMCHA ADMINLAR\n${group.title}\n\n` +
+          `${admins.map((admin) => `• ${admin.userId}`).join("\n") || "Hozircha qo'shimcha admin yo'q."}\n\n` +
+          "Panel adminlari bot sozlamalarini boshqara oladi.",
         { reply_markup: addAdminKeyboard(group, admins) },
       );
     }
@@ -745,6 +814,11 @@ function createGuardBot(token, { botId, database }) {
       await bot.api.setMyCommands([
         { command: "start", description: "Admin panelni ochish" },
         { command: "admin", description: "Guruh admin paneli" },
+        { command: "cancel", description: "Joriy kiritishni bekor qilish" },
+      ], {
+        scope: { type: "all_private_chats" },
+      });
+      await bot.api.setMyCommands([
         { command: "claim", description: "Guruh egasi uchun ro'yxatdan o'tish" },
         { command: "ban", description: "Javob berilgan foydalanuvchini ban qilish" },
         { command: "mute", description: "Foydalanuvchini mute qilish" },
@@ -752,8 +826,9 @@ function createGuardBot(token, { botId, database }) {
         { command: "kick", description: "Guruhdan chiqarish" },
         { command: "warn", description: "Ogohlantirish berish" },
         { command: "unwarn", description: "Ogohlantirishni olib tashlash" },
-        { command: "cancel", description: "Panel kiritishini bekor qilish" },
-      ]);
+      ], {
+        scope: { type: "all_group_chats" },
+      });
       const pendingCaptchas = await database.listCaptchas(botId);
       for (const captcha of pendingCaptchas) {
         scheduleCaptchaExpiry(captcha.chatId, captcha.userId, captcha.expiresAt);
@@ -774,9 +849,11 @@ module.exports = {
   AD_TERMS,
   createGuardBot,
   formatWelcome,
+  groupKeyboard,
   hasBlockedWord,
   hasLink,
   isForwardedAdvertisement,
+  panelKeyboard,
   parseBannedWords,
   validateFloodSettings,
 };

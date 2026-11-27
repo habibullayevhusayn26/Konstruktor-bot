@@ -13,8 +13,8 @@ public HTTPS endpoint; local testing requires a tunnel or equivalent.
    BotFather token.
 2. Add the bot to the group as an administrator with **Delete messages** and
    **Restrict members** permissions.
-3. The group creator sends `/claim` in the group. The creator can then open
-   `/start` in the bot's private chat and manage only claimed groups.
+3. The group creator sends `/claim` in the group, then opens the private admin
+   panel using the button the bot sends.
 4. Group owners can grant or revoke panel access by Telegram user ID.
 
 ## Moderation and panel
@@ -30,6 +30,9 @@ public HTTPS endpoint; local testing requires a tunnel or equivalent.
   `/kick`, `/warn [reason]`, or `/unwarn`. Three warnings trigger a ban.
 - The private-chat inline panel controls captcha, flood limits, banned words,
   welcome text (`{name}` and `{group}` placeholders), stats, and extra admins.
+- `/start`, `/admin`, and `/cancel` are shown in private chat. Moderation
+  commands are shown in groups; panel input can be canceled and returns to the
+  selected group's settings.
 
 The keyboard uses grammY `InlineKeyboard` with Telegram button styles. Replace
 `PLACEHOLDER_ID_*` values in `emojis.js` with numeric custom emoji IDs to use
