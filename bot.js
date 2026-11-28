@@ -198,6 +198,9 @@ async function buildChild(doc) {
     Subs,
     UserSchedulerUsers,
     onCancel: templateControls?.cancelPending,
+    onAutoPaymentStart: templateControls?.startPaymentMonitor,
+    onAutoPaymentStop: templateControls?.stopPaymentMonitor,
+    onAutoPaymentStatus: templateControls?.getPaymentMonitorStatus,
   });
   return child;
 }

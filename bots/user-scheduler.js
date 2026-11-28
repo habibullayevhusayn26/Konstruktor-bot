@@ -187,6 +187,8 @@ function registerUserSchedulerSession(bot, options) {
   let pendingAlbum = null;
   const mtprotoMessageRefs = new Map();
   let mtprotoSourceListenerAttached = false;
+  let paymentMonitorBuilder = null;
+  let paymentMonitorCallback = null;
   let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
@@ -738,6 +740,72 @@ function registerUserSchedulerSession(bot, options) {
     return sameTypeRefs[0]?.id || null;
   }
 
+  function getPaymentBotNames() {
+    const settings = doc.premiumSettings?.payment || {};
+    const names = Array.isArray(settings.cardBots)
+      ? settings.cardBots
+      : ["HumoCardBot", "CardXabarBot"];
+    return new Set(
+      names
+        .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+  }
+
+  function startPaymentMonitor() {
+    if (
+      !userClient ||
+      !doc.premiumSettings?.autoPaymentEnabled ||
+      paymentMonitorCallback ||
+      typeof userClient.addEventHandler !== "function"
+    ) return false;
+    paymentMonitorBuilder = new NewMessage({ incoming: true });
+    paymentMonitorCallback = async (event) => {
+      try {
+        const message = event?.message;
+        if (!message) return;
+        const text = typeof message.text === "string"
+          ? message.text
+          : typeof message.message === "string"
+            ? message.message
+            : "";
+        if (!text.trim()) return;
+        let senderUsername = "";
+        if (typeof message.getSender === "function") {
+          const sender = await message.getSender();
+          senderUsername = String(sender?.username || "").replace(/^@/, "").toLowerCase();
+        }
+        if (senderUsername && getPaymentBotNames().has(senderUsername)) {
+          await options.onPaymentNotification?.(text, senderUsername);
+        }
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} karta to'lovi xabarini tahlil qila olmadi:`, error.message);
+      }
+    };
+    userClient.addEventHandler(paymentMonitorCallback, paymentMonitorBuilder);
+    return true;
+  }
+
+  function stopPaymentMonitor() {
+    if (
+      !userClient ||
+      !paymentMonitorBuilder ||
+      !paymentMonitorCallback ||
+      typeof userClient.removeEventHandler !== "function"
+    ) return false;
+    userClient.removeEventHandler(paymentMonitorCallback, paymentMonitorBuilder);
+    paymentMonitorBuilder = null;
+    paymentMonitorCallback = null;
+    return true;
+  }
+
+  function getPaymentMonitorStatus() {
+    return {
+      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
+      connected: Boolean(paymentMonitorCallback),
+    };
+  }
+
   async function sendScheduledMessage(target, schedule) {
     await refreshFooterUsername();
     if (!isValidMessageRef(schedule.messageRef)) {
@@ -1286,6 +1354,7 @@ function registerUserSchedulerSession(bot, options) {
         }
       }
       await ensureRequiredSubscriptions();
+      if (doc.premiumSettings?.autoPaymentEnabled) startPaymentMonitor();
       attempt.phase = "success";
       attempt.message = "Akkaunt xavfsiz ulandi. Mini App’ni yopib, bot panelidan davom eting.";
       attempt.closed = true;
@@ -1464,6 +1533,101 @@ function registerUserSchedulerSession(bot, options) {
     return getLoginStatus();
   }
 
+  function parseCardPaymentAmount(text) {
+    const normalized = String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[,.](?=\d{2}$)/g, "");
+    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|UZS|so'm|sum|сум|сумма)/gi)];
+    if (!matches.length) {
+      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
+      if (!fallback) return null;
+      const value = Number(fallback[1].replace(/\D/g, ""));
+      return Number.isSafeInteger(value) ? value : null;
+    }
+    const value = Number(matches[0][1].replace(/\D/g, ""));
+    return Number.isSafeInteger(value) ? value : null;
+  }
+
+  async function handleCardPaymentNotification(text, senderUsername) {
+    const amount = parseCardPaymentAmount(text);
+    if (!amount) return false;
+    const settings = doc.premiumSettings || {};
+    const allowedBots = Array.isArray(settings.payment?.cardBots)
+      ? settings.payment.cardBots
+      : ["HumoCardBot", "CardXabarBot"];
+    const allowed = allowedBots
+      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
+      .includes(String(senderUsername || "").toLowerCase());
+    if (!allowed) return false;
+    const records = await UserSchedulerUsers.find({
+      botId: doc._id,
+      "pendingCardPremium.months": { $exists: true },
+    }).toArray();
+    const matched = records.find((record) => {
+      const pendingAmount = Number(
+        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
+      );
+      return pendingAmount === amount;
+    });
+    if (!matched) return false;
+    const pending = matched.pendingCardPremium;
+    const now = new Date();
+    const currentUntil = matched.premiumUntil instanceof Date
+      ? matched.premiumUntil
+      : matched.premiumUntil
+        ? new Date(matched.premiumUntil)
+        : null;
+    const start = currentUntil && currentUntil > now ? currentUntil : now;
+    const premiumUntil = new Date(start);
+    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: matched.userId },
+      {
+        $set: {
+          premium: true,
+          premiumUntil,
+          premiumPlan: pending.plan,
+          lastAutoPaymentText: String(text).slice(0, 2000),
+        },
+        $push: {
+          premiumHistory: {
+            plan: pending.plan,
+            amount: pending.amount,
+            paidAt: now,
+            method: "card-auto",
+            sender: senderUsername,
+          },
+        },
+        $unset: { pendingCardPremium: "" },
+      },
+    );
+    await bot.sendMessage(
+      matched.userId,
+      `✅ Avtotolov tasdiqlandi!\nPremium muddat: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama o'chirildi.`,
+    ).catch((error) => {
+      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
+    });
+    return true;
+  }
+
+  async function startPaymentMonitor() {
+    const runtime = await getUserRuntime(doc.ownerId);
+    return runtime.controls.startPaymentMonitor?.() || false;
+  }
+
+  async function stopPaymentMonitor() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.stopPaymentMonitor?.() || false;
+  }
+
+  function getPaymentMonitorStatus() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.getPaymentMonitorStatus?.() || {
+      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
+      connected: false,
+    };
+  }
+
   async function handleApiRequest(action, body) {
     const webAppUser = validateWebAppInitData(body.initData, bot.token);
     if (String(webAppUser.id) !== String(ownerId)) {
@@ -1531,6 +1695,7 @@ function registerUserSchedulerSession(bot, options) {
         }
       }
       await ensureRequiredSubscriptions();
+      if (doc.premiumSettings?.autoPaymentEnabled) startPaymentMonitor();
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
       console.error(`User scheduler ${doc._id} sessiyasini tiklab bo'lmadi:`, error.name);
@@ -1548,6 +1713,7 @@ function registerUserSchedulerSession(bot, options) {
   async function stopRuntime() {
     stopping = true;
     stopScheduler();
+    stopPaymentMonitor();
     await waitForSend();
     if (pendingAlbum) await flushPendingAlbum(false);
     await cancelMiniAppLogin();
@@ -1566,6 +1732,7 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   async function unlinkAccount() {
+    stopPaymentMonitor();
     stopScheduler();
     await saveSchedule({ enabled: false, nextRunAt: null, chatIds: [] });
     await waitForSend();
@@ -2024,6 +2191,9 @@ function registerUserSchedulerSession(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
+    startPaymentMonitor,
+    stopPaymentMonitor,
+    getPaymentMonitorStatus,
     async stop() {
       await stopRuntime();
     },
@@ -2137,6 +2307,7 @@ function registerUserScheduler(bot, options) {
       ...options,
       doc: sessionDoc,
       Bots: sessionCollection,
+      onPaymentNotification: handleCardPaymentNotification,
     });
     const entry = { bot: userBot, controls };
     try {
@@ -2656,6 +2827,9 @@ function registerUserScheduler(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
+    startPaymentMonitor,
+    stopPaymentMonitor,
+    getPaymentMonitorStatus,
   };
 }
 

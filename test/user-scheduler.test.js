@@ -189,6 +189,26 @@ test("Premium UI has month options once and separate card payment", () => {
   assert.match(userScheduler, /premium:card-duration/);
 });
 
+test("User Bot supports automatic card payment monitoring and admin controls", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const userScheduler = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  const adminPanel = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "admin-panel.js"),
+    "utf8",
+  );
+  assert.match(userScheduler, /HumoCardBot/);
+  assert.match(userScheduler, /CardXabarBot/);
+  assert.match(userScheduler, /autoPaymentEnabled/);
+  assert.match(userScheduler, /handleCardPaymentNotification/);
+  assert.match(adminPanel, /Avtotolovni yoqish/);
+  assert.match(adminPanel, /Avtotolovni to'xtatish/);
+  assert.match(adminPanel, /Avtotolov botlarini sozlash/);
+});
+
 test("User Bot card Premium purchase stores receipt and admin approval flow", () => {
   const fs = require("node:fs");
   const path = require("node:path");

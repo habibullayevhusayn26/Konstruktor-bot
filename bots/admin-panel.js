@@ -195,10 +195,12 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
   });
 }
 
-function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel }) {
+function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel, onAutoPaymentStart, onAutoPaymentStop, onAutoPaymentStatus }) {
   let pendingAction = null;
   let broadcastDraft = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
+  const premiumSettingsReady = (config) =>
+    Boolean(config.premiumSettings?.cardNumber);
   const panelText = () => {
     const channels = getRequiredChannels(doc);
     const lines = channels.length
@@ -385,6 +387,30 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     const action = pendingAction;
+    if (action === "premium-card-bots") {
+      const cardBots = ctx.text
+        .split(/[,\n]+/)
+        .map((name) => name.trim().replace(/^@/, ""))
+        .filter((name) => /^[A-Za-z0-9_]{3,32}$/.test(name));
+      if (!cardBots.length) {
+        await ctx.reply("Kamida bitta bot username yuboring: HumoCardBot, CardXabarBot");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.payment = { ...(premiumSettings.payment || {}), cardBots };
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply(
+        `Avtotolov botlari saqlandi:\n${cardBots.map((name) => `@${name}`).join("\n")}`,
+        panelMarkup(doc),
+      );
+      return;
+    }
     if (action === "premium-stars") {
       const match = ctx.text.trim().match(/^(\d{1,7})\s*\/\s*(\d{1,7})\s*\/\s*(\d{1,7})$/);
       if (!match) {
@@ -513,7 +539,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:(stars|card|owner)|premium-card-prices|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:(stars|card|owner)|premium-card-prices|premium-card-bots|premium-auto-on|premium-auto-off|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -535,6 +561,38 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     switch (ctx.text) {
+      case "admin:premium-card-bots":
+        pendingAction = "premium-card-bots";
+        await ctx.reply("Avtotolovni tekshiradigan bot username larini vergul bilan yuboring:\nMasalan: HumoCardBot, CardXabarBot");
+        return;
+      case "admin:premium-auto-on":
+        if (!premiumSettingsReady(doc) || !doc.userSessionEncrypted) {
+          await ctx.reply("Avtotolovni yoqish uchun admin avval Telegram akkauntini User Bot Mini App orqali ulashi kerak.");
+          return;
+        }
+        doc.premiumSettings = { ...(doc.premiumSettings || {}), autoPaymentEnabled: true };
+        doc.premiumSettings.payment = doc.premiumSettings.payment || {};
+        doc.premiumSettings.payment.cardBots = Array.isArray(doc.premiumSettings.payment.cardBots)
+          ? doc.premiumSettings.payment.cardBots
+          : ["HumoCardBot", "CardXabarBot"];
+        await Bots.updateOne(
+          { _id: doc._id, ownerId: doc.ownerId },
+          { $set: { premiumSettings: doc.premiumSettings } },
+        );
+        bot.config.premiumSettings = doc.premiumSettings;
+        await onAutoPaymentStart?.();
+        await ctx.reply("Avtotolov yoqildi. HumoCardBot va CardXabarBot xabarlari kuzatiladi.");
+        return;
+      case "admin:premium-auto-off":
+        doc.premiumSettings = { ...(doc.premiumSettings || {}), autoPaymentEnabled: false };
+        await Bots.updateOne(
+          { _id: doc._id, ownerId: doc.ownerId },
+          { $set: { premiumSettings: doc.premiumSettings } },
+        );
+        bot.config.premiumSettings = doc.premiumSettings;
+        await onAutoPaymentStop?.();
+        await ctx.reply("Avtotolov to'xtatildi.");
+        return;
       case "admin:premium:stars":
         pendingAction = "premium-stars";
         await ctx.reply("Stars narxlarini `100/250/800` formatida yuboring:\n1 oy / 3 oy / 12 oy.");
@@ -559,11 +617,19 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
         const premiumSettings = doc.premiumSettings || {};
         const stars = premiumSettings.stars || { 1: 100, 3: 250, 12: 800 };
         const card = premiumSettings.card || { 1: "50000", 3: "120000", 12: "400000" };
+        const autoStatus = onAutoPaymentStatus
+          ? onAutoPaymentStatus()
+          : { enabled: Boolean(premiumSettings.autoPaymentEnabled), connected: false };
+        const cardBots = Array.isArray(premiumSettings.payment?.cardBots)
+          ? premiumSettings.payment.cardBots
+          : ["HumoCardBot", "CardXabarBot"];
         await ctx.edit(
           `⭐ User Bot — Premium sozlamalari\n\n` +
             `Stars narxlari:\n1 oy — ${stars[1]} Stars\n3 oy — ${stars[3]} Stars\n12 oy — ${stars[12]} Stars\n\n` +
             `Karta raqami: ${premiumSettings.cardNumber || "Sozlanmagan"}\n` +
             `Karta egasi: ${premiumSettings.cardOwner || "Sozlanmagan"}\n` +
+            `Avtotolov: ${autoStatus.enabled ? (autoStatus.connected ? "Ulangan" : "Sessiya yo'q") : "O'chirilgan"}\n` +
+            `Tekshiriladigan botlar: ${cardBots.map((name) => `@${String(name).replace(/^@/, "")}`).join(", ")}\n` +
             `Karta narxlari:\n1 oy — ${Number(card[1]).toLocaleString("uz-UZ")} so'm\n` +
             `3 oy — ${Number(card[3]).toLocaleString("uz-UZ")} so'm\n` +
             `12 oy — ${Number(card[12]).toLocaleString("uz-UZ")} so'm`,
@@ -574,6 +640,12 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
                 [{ text: "💳 Karta raqamini sozlash", callback_data: "admin:premium:card" }],
                 [{ text: "👤 Karta egasini sozlash", callback_data: "admin:premium:owner" }],
                 [{ text: "💵 Karta narxlarini sozlash", callback_data: "admin:premium-card-prices" }],
+                [{ text: "🤖 Avtotolov botlarini sozlash", callback_data: "admin:premium-card-bots" }],
+                [{
+                  text: premiumSettings.autoPaymentEnabled ? "🛑 Avtotolovni to'xtatish" : "▶️ Avtotolovni yoqish",
+                  callback_data: premiumSettings.autoPaymentEnabled ? "admin:premium-auto-off" : "admin:premium-auto-on",
+                  style: premiumSettings.autoPaymentEnabled ? "danger" : "success",
+                }],
                 [{ text: "⬅️ Orqaga", callback_data: "admin:stats" }],
               ],
             },
