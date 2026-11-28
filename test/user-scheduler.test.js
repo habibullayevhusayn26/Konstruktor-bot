@@ -365,11 +365,11 @@ test("each private user gets an isolated panel and schedule", async () => {
   assert.equal(replies[0].options.reply_markup.inline_keyboard[1].length, 2);
   assert.equal(replies[0].options.reply_markup.inline_keyboard[3][0].text, "⭐ Premium tarif");
   assert.equal(replies[0].options.reply_markup.inline_keyboard[4][0].style, "success");
-  assert.equal(replies[0].options.reply_markup.inline_keyboard[5][0].text, "To'xtatish");
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[5][0].text, "⏸ To'xtatish");
   assert.match(replies[1].text, /USER BOT — BOSHQARUV PANELI/);
   assert.equal(replies[1].options.reply_markup.inline_keyboard[0][0].style, "primary");
   assert.equal(replies[2].chatId, 88);
-  assert.match(replies[2].text, /Takror yuboriladigan xabarni yuboring/);
+  assert.match(replies[2].text, /Qaysi xabar takror yuborilsin/);
   assert.deepEqual(userRecords.get("123456:88").userSchedule.messageRef.messageIds, [2]);
   assert.equal(userRecords.get("123456:88").userSchedule.messageRef.description, "matn");
   assert.equal(userRecords.get("123456:77").userSchedule.message, undefined);
@@ -466,7 +466,7 @@ test("user scheduler cancel hook clears a pending message input", async () => {
   });
 
   assert.equal(updates, 0);
-  assert.match(replies[0].text, /Takror yuboriladigan xabar/);
+  assert.match(replies[0].text, /Qaysi xabar takror yuborilsin/);
   await runtime.stop();
 });
 

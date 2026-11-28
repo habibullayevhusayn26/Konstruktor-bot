@@ -244,24 +244,24 @@ function registerUserSchedulerSession(bot, options) {
       inline_keyboard: [
         [userClient
           ? {
-              text: `Akkaunt: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "ulangan"}`,
+              text: `👤 Akkaunt: ${doc.userAccount?.username ? `@${doc.userAccount.username}` : "ulangan"}`,
               callback_data: "userbot:account",
               style: "primary",
             }
           : {
-              text: "Akkauntni Mini App orqali ulash",
+              text: "🔐 Akkauntni Mini App orqali ulash",
               ...(miniAppUrl
                 ? { web_app: { url: miniAppUrl } }
                 : { callback_data: "userbot:connect" }),
               style: "primary",
             }],
         [
-          { text: "Chatlarni tanlash", callback_data: "userbot:chats", style: "primary" },
-          { text: "Xabarni tanlash", callback_data: "userbot:message", style: "primary" },
+          { text: "💬 Chatlarni tanlash", callback_data: "userbot:chats", style: "primary" },
+          { text: "📨 Xabarni tanlash", callback_data: "userbot:message", style: "primary" },
         ],
         [
-          { text: "Interval", callback_data: "userbot:interval", style: "primary" },
-          { text: "Jadval", callback_data: "userbot:preview", style: "primary" },
+          { text: "⏱ Interval", callback_data: "userbot:interval", style: "primary" },
+          { text: "📅 Jadval", callback_data: "userbot:preview", style: "primary" },
         ],
         [{
           text: doc.premium ? "⭐ Premium faol" : "⭐ Premium tarif",
@@ -269,15 +269,15 @@ function registerUserSchedulerSession(bot, options) {
           style: "primary",
         }],
         [{
-          text: "Ko'rib chiqish va boshlash",
+          text: "▶️ Ko'rib chiqish va boshlash",
           callback_data: "userbot:preview",
           style: "success",
         }],
         [
-          { text: "To'xtatish", callback_data: "userbot:stop", style: "danger" },
+          { text: "⏸ To'xtatish", callback_data: "userbot:stop", style: "danger" },
           ...(doc.userSessionEncrypted
-            ? [{ text: "Akkauntni uzish", callback_data: "userbot:unlink", style: "danger" }]
-            : [{ text: "Yangilash", callback_data: "userbot:panel", style: "danger" }]),
+            ? [{ text: "🔓 Akkauntni uzish", callback_data: "userbot:unlink", style: "danger" }]
+            : [{ text: "🔄 Yangilash", callback_data: "userbot:panel", style: "danger" }]),
         ],
       ],
     };
@@ -984,7 +984,7 @@ function registerUserSchedulerSession(bot, options) {
     }
     chatPickerActive = true;
     await ctx.reply(
-      "Guruh yoki kanal tugmasini bosing. Telegram ro'yxatidan chatni tanlasangiz, u User Bot jadvaliga qo'shiladi; tanlangan chatni yana tanlash uni olib tashlaydi.",
+      "💬 Qaysi chatga xabar yuborilsin?\n\nGuruh yoki kanal tugmasini bosing, so'ng Telegram ro'yxatidan chatni tanlang.\nChatni qayta tanlasangiz — u jadvaldan olib tashlanadi.",
       { reply_markup: chatPickerKeyboard() },
     );
     await showConnectedChatActions(ctx);
@@ -995,7 +995,7 @@ function registerUserSchedulerSession(bot, options) {
     const chatTitles = getSchedule().chatTitles;
     if (!selectedIds.length) {
       await ctx.reply(
-        "Hozir hech qanday chat ulanmagan.",
+        "📭 Hozir hech qanday chat tanlanmagan.",
         {
           reply_markup: {
             inline_keyboard: [[{
@@ -1029,13 +1029,13 @@ function registerUserSchedulerSession(bot, options) {
         target.title ||
         "Chat nomi mavjud emas";
       rows.push([{
-        text: `Uzni: ${title.slice(0, 38)}`,
+        text: `❌ Uzish: ${title.slice(0, 35)}`,
         callback_data: `userbot:chat-remove:${target.peerId}`,
         style: "danger",
       }]);
     }
     await ctx.reply(
-      "Ulangan chatlar:",
+      "✅ Tanlangan chatlar:",
       {
         reply_markup: {
           inline_keyboard: [
@@ -1673,8 +1673,8 @@ function registerUserSchedulerSession(bot, options) {
       } else if (action === "premium") {
         await ctx.reply(
           doc.premium
-            ? "⭐ Premium tarif faol.\nCheksiz chatlar, 10 soniya interval va reklamasiz yuborish."
-            : "⭐ Premium tarif\nBepul: 20 chat, 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval, reklamasiz va kengaytirilgan imkoniyatlar.",
+            ? "⭐ Premium tarif faol.\nCheksiz chatlar, 10 soniya interval va reklamasiz xabarlar."
+            : "⭐ Premium tarif\nBepul: 20 chat va 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval va reklamasiz xabarlar.",
           { reply_markup: panelKeyboard() },
         );
       } else if (action === "connect") {
@@ -1723,10 +1723,10 @@ function registerUserSchedulerSession(bot, options) {
         inputModes.set(ownerId, { type: action });
         await ctx.reply(
           action === "message"
-            ? "Takror yuboriladigan xabarni yuboring: matn, media, fayl yoki forward. Tugmalar va premium emoji ham Telegram xabaridan saqlanadi."
+            ? "📨 Qaysi xabar takror yuborilsin?\n\nMatn, rasm, video, fayl yoki forward yuboring.\nBot xabarni asl ko'rinishida yuboradi."
             : doc.premium
-              ? "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:00:10). Premium eng qisqa interval — 10 soniya."
-              : "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:10:00). Bepul tarif eng qisqa interval — 10 daqiqa.",
+              ? "⏱ Qanday intervalda yuborilsin?\n\nFormat: soat:daqiqa:soniya\nMasalan: 00:00:10\n\nPremium minimal interval: 10 soniya."
+              : "⏱ Qanday intervalda yuborilsin?\n\nFormat: soat:daqiqa:soniya\nMasalan: 00:10:00\n\nBepul tarif minimal interval: 10 daqiqa.",
           {
             reply_markup: {
               inline_keyboard: [[{
@@ -1767,7 +1767,7 @@ function registerUserSchedulerSession(bot, options) {
         );
       } else if (action === "activate") {
         if (getSchedule().enabled) {
-          await ctx.reply("Jadval allaqachon faol. Takroriy yuborishni oldini olish uchun uni avval to'xtating.");
+          await ctx.reply("ℹ️ Jadval allaqachon faol.\nAvval «To'xtatish» tugmasini bosing.");
           return;
         }
         const validation = await validateSchedule();
@@ -1780,13 +1780,13 @@ function registerUserSchedulerSession(bot, options) {
           nextRunAt: new Date(),
         });
         startScheduler();
-        await showPanel(ctx, false, "Jadval faollashtirildi. Birinchi xabar yuborilishi kutilmoqda.");
+        await showPanel(ctx, false, "✅ Jadval faollashtirildi.");
       } else if (action === "stop") {
         await saveSchedule({ enabled: false, nextRunAt: null });
         stopScheduler();
-        await showPanel(ctx, false, "Jadval to'xtatildi. Yangi yuborishlar bajarilmaydi.");
+        await showPanel(ctx, false, "⏸ Jadval to'xtatildi.");
       } else if (action === "unlink") {
-        await ctx.reply("Ulangan akkaunt sessiyasini bekor qilaymi?", {
+        await ctx.reply("🔓 Akkaunt uzilsinmi?\nBarcha chat va xabar sozlamalari ham tozalanadi.", {
           reply_markup: {
             inline_keyboard: [[
               { text: "Ha, akkauntni uzish", callback_data: "userbot:unlink-confirm", style: "danger" },
@@ -1796,7 +1796,7 @@ function registerUserSchedulerSession(bot, options) {
         });
       } else if (action === "unlink-confirm") {
         await unlinkAccount();
-        await showPanel(ctx, false, "Telegram akkaunt uzildi va saqlangan sessiya bekor qilindi.");
+        await showPanel(ctx, false, "✅ Telegram akkaunt uzildi.");
       }
     } catch (error) {
       console.error(`User scheduler ${doc._id} panel amali bajarilmadi:`, error.message);
@@ -2175,18 +2175,19 @@ function registerUserScheduler(bot, options) {
       ? `Faol — ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha`
       : "Faol emas";
     await ctx.reply(
-      `⭐ PREMIUM TARIF\nBepul va Premium tarif\n\n` +
-        `Chatlar             10–20 ta       Cheksiz\n` +
-        `Interval              10 daqiqa       10 soniya\n` +
-        `Xabarlar             1 ta          10+ ta\n` +
-        `Premium emoji       —               ✓\n` +
-        `Rasm, video, fayl   —               ✓\n` +
-        `Tugma va caption    —               ✓\n` +
-        `Akkauntlar          1 ta           1–5 ta\n` +
-        `Reklama              Bor            Yo'q\n` +
-        `Statistika          Oddiy          Kengaytirilgan\n\n` +
-        `Xalqaro raqamlar — barcha tariflarda\n\n` +
-        `Sizning holatingiz: ${statusText}`,
+      `⭐ PREMIUM TARIF\n\n` +
+        `Bepul:\n` +
+        `• Chatlar: 20 ta\n` +
+        `• Minimal interval: 10 daqiqa\n` +
+        `• Akkauntlar: 1 ta\n` +
+        `• Xabar oxirida reklama bor\n\n` +
+        `Premium:\n` +
+        `• Chatlar: cheksiz\n` +
+        `• Minimal interval: 10 soniya\n` +
+        `• Akkauntlar: ko'p\n` +
+        `• Premium emoji, rasm, video va fayllar\n` +
+        `• Xabarda reklama yo'q\n\n` +
+        `Holatingiz: ${statusText}`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -2240,8 +2241,8 @@ function registerUserScheduler(bot, options) {
       const status = await getPremiumStatus(ctx.from.id);
       await ctx.reply(
         status.active
-          ? `⭐ Premium faol\nMuddat: ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama: o'chirilgan`
-          : "Sizda hozir Premium yo'q.",
+          ? `⭐ Premium faol\nAmal qilish muddati: ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama: o‘chirilgan`
+          : "⭐ Sizda hozir Premium yo'q.",
         { reply_markup: { inline_keyboard: [[{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }]] } },
       );
       return;
@@ -2258,7 +2259,7 @@ function registerUserScheduler(bot, options) {
       return;
     }
     if (action === "duration") {
-      await ctx.reply("Premium muddatini tanlang:", {
+      await ctx.reply("📅 Premium muddatini tanlang:", {
         reply_markup: {
           inline_keyboard: [
             ...[1, 3, 12].map((months) => [{
@@ -2329,8 +2330,8 @@ function registerUserScheduler(bot, options) {
     await ctx.reply(
       `⭐ PREMIUM FAOLLASHTIRILDI\n` +
         `Muddat: ${plan.label}\n` +
-        `Amal qilish muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\n` +
-        `Reklama olib tashlandi.`,
+        `Amal qilish: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\n` +
+        `Reklama o‘chirildi.`,
     );
   });
   bot.onUpdate("message", dispatchUpdate);

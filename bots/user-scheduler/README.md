@@ -1,5 +1,18 @@
 # User Bot — rejalashtirilgan postlar
 
+## Asosiy panel
+
+`/start` bosilganda quyidagi qismlar ko'rinadi:
+
+- **Akkaunt** — Telegram akkaunt holati
+- **Chatlarni tanlash** — Telegram native guruh/kanal tanlash
+- **Xabarni tanlash** — matn, media, fayl yoki forward
+- **Interval** — yuborish oralig'i
+- **Jadval** — ko'rib chiqish va tasdiqlash
+- **Premium** — tarifni ko'rish va shu bot ichida Stars bilan sotib olish
+- **To'xtatish** — jadvalni pauza qilish
+- **Akkauntni uzish** — Telegram sessiyasini bekor qilish
+
 Marketdan **User Bot — rejalashtirilgan postlar** turini yarating va yangi
 botning shaxsiy chatida `/start` yuboring. Botdan istalgan foydalanuvchi
 foydalanishi mumkin: har bir odam o'z akkaunti, xabari, chatlari va jadvalini
