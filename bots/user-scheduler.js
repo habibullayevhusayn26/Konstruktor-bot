@@ -669,41 +669,6 @@ function registerUserSchedulerSession(bot, options) {
     };
   }
 
-  async function sendAutoFooterMessage(target) {
-    const footerText = makeAutoFooter(footerUsername).replace(/^\n\n/, "");
-    if (!footerText || typeof userClient.sendMessage !== "function") return false;
-    const formattingEntities = [];
-    const robotId = EMOJI_IDS["🤖"]?.[0];
-    const checkId = EMOJI_IDS["✅"]?.[0];
-    if (robotId) {
-      formattingEntities.push(new Api.MessageEntityCustomEmoji({
-        offset: 0,
-        length: 2,
-        documentId: robotId,
-      }));
-    }
-    const mentionIndex = footerText.indexOf("@");
-    if (mentionIndex >= 0) {
-      const mentionLength = footerText.indexOf(" ", mentionIndex) - mentionIndex;
-      formattingEntities.push(new Api.MessageEntityMention({
-        offset: mentionIndex,
-        length: mentionLength > 0 ? mentionLength : footerUsername.length + 1,
-      }));
-    }
-    if (checkId) {
-      formattingEntities.push(new Api.MessageEntityCustomEmoji({
-        offset: footerText.lastIndexOf("✅"),
-        length: 1,
-        documentId: checkId,
-      }));
-    }
-    await userClient.sendMessage(target, {
-      message: footerText,
-      formattingEntities,
-    });
-    return true;
-  }
-
   function isForwardedFromAnotherUser(message) {
     const origin = message.forward_origin;
     const fromUserId = origin?.type === "user"
@@ -793,7 +758,6 @@ function registerUserSchedulerSession(bot, options) {
     await refreshFooterUsername();
     if (!isValidMessageRef(schedule.messageRef)) {
       await userClient.sendMessage(target, buildTextSendParams(schedule.message, {}));
-      await sendAutoFooterMessage(target);
       return;
     }
     if (
@@ -878,7 +842,29 @@ function registerUserSchedulerSession(bot, options) {
       ? await userClient.forwardMessages(target, params)
       : await userClient.copyMessages(target, params);
     if (Array.isArray(sent) && sent.length) {
-      await sendAutoFooterMessage(target);
+      for (const sentMessage of sent) {
+        if (!sentMessage) continue;
+        const originalCaption =
+          typeof sentMessage.message === "string"
+            ? sentMessage.message
+            : schedule.messageRef.text || "";
+        const captionParams = buildTextSendParams(originalCaption, schedule.messageRef);
+        try {
+          await userClient.editMessage(target, {
+            message: sentMessage,
+            text: captionParams.message,
+            formattingEntities: captionParams.formattingEntities,
+            ...(captionParams.buttons ? { buttons: captionParams.buttons } : {}),
+          });
+        } catch (error) {
+          const code = error?.errorMessage || error?.message || "";
+          if (!/not modified|identical/i.test(code)) {
+            console.error(
+              `User scheduler ${doc._id} media/captionga bot reklamasini qo'shib bo'lmadi: ${code}`,
+            );
+          }
+        }
+      }
     }
     if (
       !Array.isArray(sent) ||

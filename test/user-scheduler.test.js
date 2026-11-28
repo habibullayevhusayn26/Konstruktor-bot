@@ -133,6 +133,18 @@ test("auto-message footer preserves base content and adds one blank line", () =>
   assert.equal(makeAutoFooter(""), "");
 });
 
+test("footer is embedded in original message and never sent separately", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /sendAutoFooterMessage\(/);
+  assert.match(source, /buildTextSendParams\(schedule\.messageRef\.text/);
+  assert.match(source, /text: captionParams\.message/);
+});
+
 test("footer uses the live bot username instead of a stale username", async () => {
   const bot = new BotConstructor("test-token");
   bot.api = async (method) => method === "getMe"
