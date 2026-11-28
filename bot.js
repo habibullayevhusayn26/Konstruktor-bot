@@ -53,11 +53,6 @@ const ADMIN_IDS = (process.env.ADMIN_IDS || "")
   .map((s) => Number(s.trim()))
   .filter(Boolean);
 const MAX_BOTS = Number(process.env.MAX_BOTS_PER_USER || 3);
-const PREMIUM_PLANS = Object.freeze({
-  1: Object.freeze({ months: 1, price: 50000, label: "1 oy" }),
-  3: Object.freeze({ months: 3, price: 120000, label: "3 oy" }),
-  12: Object.freeze({ months: 12, price: 400000, label: "12 oy" }),
-});
 
 for (const [k, v] of Object.entries({
   TELEGRAM_BOT_TOKEN,
@@ -182,7 +177,6 @@ async function buildChild(doc) {
     SmmOrders: ConstructorDb.collection(`smm_orders_${doc._id}`),
     SmmTopups: ConstructorDb.collection(`smm_topups_${doc._id}`),
     UserSchedulerUsers,
-    Users,
     encryptSecret: encrypt,
     decryptSecret: decrypt,
     publicApiBaseUrl: PUBLIC_API_URL,
@@ -695,7 +689,6 @@ const mainMenu = (id) => [
     [{ text: "➕ Bot yaratish", callback_data: "new" }],
     [{ text: "🤖 Botlarim", callback_data: "my" }],
     [{ text: "💰 Balans", callback_data: "balance" }],
-    [{ text: "⭐ Premium", callback_data: "premium" }],
     [{ text: "👤 Profil", callback_data: "profile" }],
     ...(isAdmin(id) ? [[{ text: "🛠 Admin panel", callback_data: "adm" }]] : []),
   ]),
@@ -1456,172 +1449,6 @@ async function main() {
           { text: "⭐ Stars", callback_data: "topup:stars" },
         ],
         back("menu"),
-      ]),
-    );
-  });
-
-  const premiumText = async (ctx) => {
-    const user = await Users.findOne({ _id: ctx.from.id });
-    const premiumUntil = user?.premiumUntil instanceof Date
-      ? user.premiumUntil
-      : user?.premiumUntil
-        ? new Date(user.premiumUntil)
-        : null;
-    const isPremium = premiumUntil && premiumUntil > new Date();
-    const status = isPremium
-      ? `Faol — ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`
-      : "Faol emas";
-    return [
-      `⭐ PREMIUM TARIF\nBepul va Premium tarif\n\n` +
-        `BEPUL                 PREMIUM\n` +
-        `Chatlar             10–20 ta       Cheksiz\n` +
-        `Interval              10 daqiqa       10 soniya\n` +
-        `Xabarlar             1 ta          10+ ta\n` +
-        `Premium emoji       —               ✓\n` +
-        `Rasm, video, fayl   —               ✓\n` +
-        `Tugma va caption    —               ✓\n` +
-        `Akkauntlar          1 ta           1–5 ta\n` +
-        `Reklama              Bor            Yo'q\n` +
-        `Statistika          Oddiy          Kengaytirilgan\n` +
-        `Avto qayta ulash    —               ✓ + email\n` +
-        `Navbat ustunligi    —               ✓\n` +
-        `Jurnal (log)        —               ✓\n\n` +
-        `✓ Xalqaro raqamlar — barcha tariflarda\n` +
-        `✓ Premiumda xabar oxiriga reklama qo'shilmaydi\n\n` +
-        `Sizning holatingiz: ${status}`,
-      kb([
-        [
-          { text: "1 oy", callback_data: "premium:buy:1" },
-          { text: "3 oy", callback_data: "premium:buy:3" },
-          { text: "12 oy", callback_data: "premium:buy:12" },
-        ],
-        [{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration" }],
-        [
-          { text: "📋 Mening tarifim", callback_data: "premium:mine" },
-          { text: "📨 To'lov tarixi", callback_data: "premium:history" },
-        ],
-        back("menu"),
-      ]),
-    ];
-  };
-
-  cb(/^premium$/, async (ctx) => {
-    await show(ctx, ...await premiumText(ctx));
-  });
-
-  cb(/^premium:mine$/, async (ctx) => {
-    const user = await Users.findOne({ _id: ctx.from.id });
-    const premiumUntil = user?.premiumUntil instanceof Date
-      ? user.premiumUntil
-      : user?.premiumUntil
-        ? new Date(user.premiumUntil)
-        : null;
-    const isPremium = premiumUntil && premiumUntil > new Date();
-    await show(
-      ctx,
-      isPremium
-        ? `⭐ Premium faol\nMuddat: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama: o'chirilgan`
-        : "Sizda hozir Premium yo'q.",
-      kb([
-        [{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration" }],
-        back("premium"),
-      ]),
-    );
-  });
-
-  cb(/^premium:history$/, async (ctx) => {
-    const transactions = await BalanceTransactions.find({
-      ownerId: ctx.from.id,
-      type: "premium_purchase",
-    }).sort({ createdAt: -1 }).limit(10).toArray();
-    const lines = transactions.length
-      ? transactions.map((item) =>
-          `${new Date(item.createdAt).toLocaleDateString("uz-UZ")} — ${item.months} oy — ${money(item.amount)}`,
-        ).join("\n")
-      : "To'lovlar topilmadi.";
-    await show(
-      ctx,
-      `📨 Premium to'lov tarixi\n\n${lines}`,
-      kb([back("premium")]),
-    );
-  });
-
-  cb(/^premium:duration$/, async (ctx) => {
-    await show(
-      ctx,
-      "Premium muddatini tanlang:",
-      kb([
-        ...[1, 3, 12].map((months) => [{
-          text: `${PREMIUM_PLANS[months].label} — ${money(PREMIUM_PLANS[months].price)}`,
-          callback_data: `premium:buy:${months}`,
-        }]),
-        back("premium"),
-      ]),
-    );
-  });
-
-  cb(/^premium:buy:(1|3|12)$/, async (ctx, match) => {
-    const months = Number(match[1]);
-    const plan = PREMIUM_PLANS[months];
-    if (!plan) return show(ctx, "Tarif topilmadi.", kb([back("premium")]));
-    const user = await Users.findOne({ _id: ctx.from.id });
-    const balance = Number(user?.balance) || 0;
-    if (balance < plan.price) {
-      await show(
-        ctx,
-        `⭐ ${plan.label} Premium uchun ${money(plan.price)} kerak.\n` +
-          `Balansingiz: ${money(balance)}.\nAvval balansni to'ldiring.`,
-        kb([
-          [{ text: "💰 Balansni to'ldirish", callback_data: "balance" }],
-          back("premium"),
-        ]),
-      );
-      return;
-    }
-    const now = new Date();
-    const currentUntil = user?.premiumUntil instanceof Date
-      ? user.premiumUntil
-      : user?.premiumUntil
-        ? new Date(user.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + plan.months);
-    const purchaseUpdate = await Users.updateOne(
-      { _id: ctx.from.id, balance: { $gte: plan.price } },
-      {
-        $inc: { balance: -plan.price },
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: plan.label,
-        },
-      },
-      { upsert: false },
-    );
-    const updatedUser = await Users.findOne({ _id: ctx.from.id });
-    if (purchaseUpdate.modifiedCount !== 1) {
-      await show(ctx, "Premium narxini yechib bo'lmadi. Qayta urinib ko'ring.", kb([back("premium")]));
-      return;
-    }
-    await BalanceTransactions.insertOne({
-      ownerId: ctx.from.id,
-      amount: plan.price,
-      balanceAfter: updatedUser?.balance,
-      type: "premium_purchase",
-      months: plan.months,
-      reference: `premium:${ctx.from.id}:${crypto.randomUUID()}`,
-      createdAt: now,
-    });
-    await show(
-      ctx,
-      `⭐ PREMIUM FAOLLASHTIRILDI\n` +
-        `Muddat: ${plan.label}\n` +
-        `Amal qilish muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\n` +
-        `Xarajat: ${money(plan.price)}`,
-      kb([
-        [{ text: "📋 Mening tarifim", callback_data: "premium:mine" }],
-        back("premium"),
       ]),
     );
   });

@@ -159,6 +159,24 @@ test("footer uses the live bot username instead of a stale username", async () =
   assert.equal(makeAutoFooter("live_bot_name"), "\n\n🤖 Xabar @live_bot_name orqali yuborildi! ✅");
 });
 
+test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const userScheduler = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  const constructorBot = fs.readFileSync(
+    path.join(__dirname, "..", "bot.js"),
+    "utf8",
+  );
+  assert.match(userScheduler, /PREMIUM TARIF/);
+  assert.match(userScheduler, /sendInvoice/);
+  assert.match(userScheduler, /currency: "XTR"/);
+  assert.doesNotMatch(constructorBot, /callback_data: "premium/);
+  assert.doesNotMatch(constructorBot, /PREMIUM TARIF/);
+});
+
 test("Mini App URL requires HTTPS and preserves the configured path prefix", () => {
   assert.equal(
     buildMiniAppUrl("https://maker.example/base/", 123456),

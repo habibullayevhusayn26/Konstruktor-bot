@@ -18,6 +18,11 @@ const LOGIN_START_WINDOW_MS = 60 * 60_000;
 const MAX_LOGIN_STARTS_PER_HOUR = 5;
 const MAX_CREDENTIAL_ATTEMPTS = 5;
 const ALBUM_CAPTURE_DELAY_MS = 750;
+const PREMIUM_PLANS = Object.freeze({
+  1: Object.freeze({ months: 1, stars: 100, label: "1 oy" }),
+  3: Object.freeze({ months: 3, stars: 250, label: "3 oy" }),
+  12: Object.freeze({ months: 12, stars: 800, label: "12 oy" }),
+});
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
   intervalSeconds: MIN_INTERVAL_SECONDS,
@@ -260,7 +265,7 @@ function registerUserSchedulerSession(bot, options) {
         ],
         [{
           text: doc.premium ? "⭐ Premium faol" : "⭐ Premium tarif",
-          callback_data: "userbot:premium",
+          callback_data: "premium:show",
           style: "primary",
         }],
         [{
@@ -1669,7 +1674,7 @@ function registerUserSchedulerSession(bot, options) {
         await ctx.reply(
           doc.premium
             ? "⭐ Premium tarif faol.\nCheksiz chatlar, 10 soniya interval va reklamasiz yuborish."
-            : "⭐ Premium tarif\nBepul: 20 chat, 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval, reklamasiz va kengaytirilgan imkoniyatlar.\nPremiumni Konstruktor asosiy botidagi «Premium» bo'limidan sotib oling.",
+            : "⭐ Premium tarif\nBepul: 20 chat, 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval, reklamasiz va kengaytirilgan imkoniyatlar.",
           { reply_markup: panelKeyboard() },
         );
       } else if (action === "connect") {
@@ -2006,7 +2011,7 @@ function registerUserSchedulerSession(bot, options) {
 }
 
 function registerUserScheduler(bot, options) {
-  const { doc, Bots, UserSchedulerUsers, Users } = options;
+  const { doc, Bots, UserSchedulerUsers } = options;
   const createSessionBot = options.createSessionBot ||
     ((token, botOptions) => new BotConstructor(token, botOptions));
   const sessions = new Map();
@@ -2080,16 +2085,12 @@ function registerUserScheduler(bot, options) {
     if (stopping) throw new Error("User Bot hozir to'xtatilmoqda.");
     await migrateLegacyOwnerSession();
     const record = await loadOrCreateUserRecord(userId);
-    let premium = false;
-    if (Users && typeof Users.findOne === "function") {
-      const user = await Users.findOne({ _id: userId });
-      const premiumUntil = user?.premiumUntil instanceof Date
-        ? user.premiumUntil
-        : user?.premiumUntil
-          ? new Date(user.premiumUntil)
-          : null;
-      premium = Boolean(premiumUntil && premiumUntil > new Date());
-    }
+    const premiumUntil = record.premiumUntil instanceof Date
+      ? record.premiumUntil
+      : record.premiumUntil
+        ? new Date(record.premiumUntil)
+        : null;
+    const premium = Boolean(premiumUntil && premiumUntil > new Date());
     const sessionDoc = {
       ...doc,
       ownerId: userId,
@@ -2155,8 +2156,183 @@ function registerUserScheduler(bot, options) {
     }
   }
 
+  async function getPremiumStatus(userId) {
+    const record = await loadOrCreateUserRecord(userId);
+    const premiumUntil = record.premiumUntil instanceof Date
+      ? record.premiumUntil
+      : record.premiumUntil
+        ? new Date(record.premiumUntil)
+        : null;
+    return {
+      active: Boolean(premiumUntil && premiumUntil > new Date()),
+      premiumUntil,
+    };
+  }
+
+  async function showPremium(ctx) {
+    const status = await getPremiumStatus(ctx.from.id);
+    const statusText = status.active
+      ? `Faol — ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha`
+      : "Faol emas";
+    await ctx.reply(
+      `⭐ PREMIUM TARIF\nBepul va Premium tarif\n\n` +
+        `Chatlar             10–20 ta       Cheksiz\n` +
+        `Interval              10 daqiqa       10 soniya\n` +
+        `Xabarlar             1 ta          10+ ta\n` +
+        `Premium emoji       —               ✓\n` +
+        `Rasm, video, fayl   —               ✓\n` +
+        `Tugma va caption    —               ✓\n` +
+        `Akkauntlar          1 ta           1–5 ta\n` +
+        `Reklama              Bor            Yo'q\n` +
+        `Statistika          Oddiy          Kengaytirilgan\n\n` +
+        `Xalqaro raqamlar — barcha tariflarda\n\n` +
+        `Sizning holatingiz: ${statusText}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "1 oy", callback_data: "premium:buy:1", style: "primary" },
+              { text: "3 oy", callback_data: "premium:buy:3", style: "primary" },
+              { text: "12 oy", callback_data: "premium:buy:12", style: "primary" },
+            ],
+            [{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }],
+            [
+              { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
+              { text: "📨 To'lov tarixi", callback_data: "premium:history", style: "primary" },
+            ],
+          ],
+        },
+      },
+    );
+  }
+
+  async function sendPremiumInvoice(ctx, months) {
+    const plan = PREMIUM_PLANS[months];
+    if (!plan) return;
+    const payload = `userbot_premium_${doc._id}_${ctx.from.id}_${months}_${crypto.randomBytes(8).toString("hex")}`;
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: ctx.from.id },
+      { $set: { pendingPremiumPayload: payload } },
+      { upsert: true },
+    );
+    await bot.api("sendInvoice", {
+      chat_id: ctx.chat.id,
+      title: `User Bot — ${plan.label} Premium`,
+      description: "Cheksiz chatlar, 10 soniya interval, premium emoji va reklamasiz xabarlar.",
+      payload,
+      provider_token: "",
+      currency: "XTR",
+      prices: [{ label: plan.label, amount: plan.stars }],
+    });
+  }
+
   bot.command("start", dispatchUpdate);
   bot.onCallbackData(/^userbot:(.+)$/, dispatchUpdate);
+  bot.onCallbackData(/^premium:(show|mine|history|duration)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.chat?.type !== "private") return;
+    const action = match[1];
+    if (action === "show") {
+      await showPremium(ctx);
+      return;
+    }
+    if (action === "mine") {
+      const status = await getPremiumStatus(ctx.from.id);
+      await ctx.reply(
+        status.active
+          ? `⭐ Premium faol\nMuddat: ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama: o'chirilgan`
+          : "Sizda hozir Premium yo'q.",
+        { reply_markup: { inline_keyboard: [[{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }]] } },
+      );
+      return;
+    }
+    if (action === "history") {
+      const record = await loadOrCreateUserRecord(ctx.from.id);
+      const history = Array.isArray(record.premiumHistory) ? record.premiumHistory : [];
+      const lines = history.length
+        ? history.slice(-10).reverse().map((item) =>
+            `${new Date(item.paidAt).toLocaleDateString("uz-UZ")} — ${item.plan}`,
+          ).join("\n")
+        : "To'lovlar topilmadi.";
+      await ctx.reply(`📨 Premium to'lov tarixi\n\n${lines}`);
+      return;
+    }
+    if (action === "duration") {
+      await ctx.reply("Premium muddatini tanlang:", {
+        reply_markup: {
+          inline_keyboard: [
+            ...[1, 3, 12].map((months) => [{
+              text: `${PREMIUM_PLANS[months].label} — ⭐ ${PREMIUM_PLANS[months].stars}`,
+              callback_data: `premium:buy:${months}`,
+              style: "primary",
+            }]),
+          ],
+        },
+      });
+    }
+  });
+  bot.onCallbackData(/^premium:buy:(1|3|12)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.chat?.type !== "private") return;
+    await sendPremiumInvoice(ctx, Number(match[1]));
+  });
+
+  bot.onUpdate("pre_checkout_query", async (ctx) => {
+    const record = await UserSchedulerUsers.findOne({
+      botId: doc._id,
+      userId: ctx.from.id,
+      pendingPremiumPayload: ctx.preCheckoutQuery.invoice_payload,
+    });
+    await ctx.answerPreCheckout(Boolean(record), record ? undefined : "To'lov eskirgan. Qayta urinib ko'ring.");
+  });
+
+  bot.onUpdate("successful_payment", async (ctx) => {
+    const payment = ctx.message.successful_payment;
+    if (payment.currency !== "XTR") return;
+    const record = await UserSchedulerUsers.findOne({
+      botId: doc._id,
+      userId: ctx.from.id,
+      pendingPremiumPayload: payment.invoice_payload,
+    });
+    if (!record) return;
+    const match = String(payment.invoice_payload).match(/^userbot_premium_(\d+)_(\d+)_(1|3|12)_/);
+    if (!match) return;
+    const months = Number(match[3]);
+    const plan = PREMIUM_PLANS[months];
+    const now = new Date();
+    const currentUntil = record.premiumUntil instanceof Date
+      ? record.premiumUntil
+      : record.premiumUntil
+        ? new Date(record.premiumUntil)
+        : null;
+    const start = currentUntil && currentUntil > now ? currentUntil : now;
+    const premiumUntil = new Date(start);
+    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + plan.months);
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: ctx.from.id },
+      {
+        $set: {
+          premium: true,
+          premiumUntil,
+          premiumPlan: plan.label,
+        },
+        $push: {
+          premiumHistory: {
+            plan: plan.label,
+            stars: plan.stars,
+            paidAt: now,
+          },
+        },
+        $unset: { pendingPremiumPayload: "" },
+      },
+    );
+    await ctx.reply(
+      `⭐ PREMIUM FAOLLASHTIRILDI\n` +
+        `Muddat: ${plan.label}\n` +
+        `Amal qilish muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\n` +
+        `Reklama olib tashlandi.`,
+    );
+  });
   bot.onUpdate("message", dispatchUpdate);
 
   async function start() {
