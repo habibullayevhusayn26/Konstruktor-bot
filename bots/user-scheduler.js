@@ -22,6 +22,8 @@ const PREMIUM_PLANS = Object.freeze({
   3: Object.freeze({ months: 3, stars: 250, label: "3 oy" }),
   12: Object.freeze({ months: 12, stars: 800, label: "12 oy" }),
 });
+
+
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
   intervalSeconds: MIN_INTERVAL_SECONDS,
@@ -2177,6 +2179,36 @@ function registerUserScheduler(bot, options) {
     }
   }
 
+  function getPremiumSettings() {
+    const settings = doc.premiumSettings && typeof doc.premiumSettings === "object"
+      ? doc.premiumSettings
+      : {};
+    const stars = settings.stars && typeof settings.stars === "object"
+      ? settings.stars
+      : {};
+    const card = settings.card && typeof settings.card === "object"
+      ? settings.card
+      : {};
+    return {
+      stars: {
+        1: Number(stars[1]) || 100,
+        3: Number(stars[3]) || 250,
+        12: Number(stars[12]) || 800,
+      },
+      card: {
+        1: Number(card[1]) || 50000,
+        3: Number(card[3]) || 120000,
+        12: Number(card[12]) || 400000,
+      },
+      cardNumber: typeof settings.cardNumber === "string"
+        ? settings.cardNumber
+        : process.env.USERBOT_PREMIUM_CARD_NUMBER || "",
+      cardOwner: typeof settings.cardOwner === "string"
+        ? settings.cardOwner
+        : process.env.USERBOT_PREMIUM_CARD_OWNER || "",
+    };
+  }
+
   async function getPremiumStatus(userId) {
     const record = await loadOrCreateUserRecord(userId);
     const premiumUntil = record.premiumUntil instanceof Date
@@ -2192,6 +2224,7 @@ function registerUserScheduler(bot, options) {
 
   async function showPremium(ctx) {
     const status = await getPremiumStatus(ctx.from.id);
+    const premiumSettings = getPremiumSettings();
     const statusText = status.active
       ? `Faol — ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha`
       : "Faol emas";
@@ -2213,15 +2246,12 @@ function registerUserScheduler(bot, options) {
         reply_markup: {
           inline_keyboard: [
             [
-              { text: "1 oy", callback_data: "premium:buy:1", style: "primary" },
-              { text: "3 oy", callback_data: "premium:buy:3", style: "primary" },
-              { text: "12 oy", callback_data: "premium:buy:12", style: "primary" },
+              { text: `1 oy — ⭐ ${premiumSettings.stars[1]}`, callback_data: "premium:buy:1", style: "primary" },
+              { text: `3 oy — ⭐ ${premiumSettings.stars[3]}`, callback_data: "premium:buy:3", style: "primary" },
+              { text: `12 oy — ⭐ ${premiumSettings.stars[12]}`, callback_data: "premium:buy:12", style: "primary" },
             ],
-            [{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }],
             [
-              { text: "💳 Karta: 1 oy", callback_data: "premium:card:1", style: "primary" },
-              { text: "💳 Karta: 3 oy", callback_data: "premium:card:3", style: "primary" },
-              { text: "💳 Karta: 12 oy", callback_data: "premium:card:12", style: "primary" },
+              { text: "💳 Karta orqali sotib olish", callback_data: "premium:card-duration", style: "success" },
             ],
             [
               { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
@@ -2236,6 +2266,7 @@ function registerUserScheduler(bot, options) {
   async function sendPremiumInvoice(ctx, months) {
     const plan = PREMIUM_PLANS[months];
     if (!plan) return;
+    const premiumSettings = getPremiumSettings();
     const payload = `userbot_premium_${doc._id}_${ctx.from.id}_${months}_${crypto.randomBytes(8).toString("hex")}`;
     await UserSchedulerUsers.updateOne(
       { botId: doc._id, userId: ctx.from.id },
@@ -2249,13 +2280,13 @@ function registerUserScheduler(bot, options) {
       payload,
       provider_token: "",
       currency: "XTR",
-      prices: [{ label: plan.label, amount: plan.stars }],
+      prices: [{ label: plan.label, amount: premiumSettings.stars[months] }],
     });
   }
 
   bot.command("start", dispatchUpdate);
   bot.onCallbackData(/^userbot:(.+)$/, dispatchUpdate);
-  bot.onCallbackData(/^premium:(show|mine|history|duration)$/, async (ctx, match) => {
+  bot.onCallbackData(/^premium:(show|mine|history|duration|card-duration)$/, async (ctx, match) => {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     const action = match[1];
@@ -2269,7 +2300,7 @@ function registerUserScheduler(bot, options) {
         status.active
           ? `⭐ Premium faol\nAmal qilish muddati: ${status.premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama: o‘chirilgan`
           : "⭐ Sizda hozir Premium yo'q.",
-        { reply_markup: { inline_keyboard: [[{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }]] } },
+        { reply_markup: { inline_keyboard: [[{ text: "⭐ Premiumni ko'rish", callback_data: "premium:show", style: "success" }]] } },
       );
       return;
     }
@@ -2284,12 +2315,28 @@ function registerUserScheduler(bot, options) {
       await ctx.reply(`📨 Premium to'lov tarixi\n\n${lines}`);
       return;
     }
+    if (action === "card-duration") {
+      const premiumSettings = getPremiumSettings();
+      await ctx.reply("💳 Karta bilan qaysi muddat Premium sotib olinadi?", {
+        reply_markup: {
+          inline_keyboard: [
+            ...[1, 3, 12].map((months) => [{
+              text: `${PREMIUM_PLANS[months].label} — ${Number(premiumSettings.card[months]).toLocaleString("uz-UZ")} so'm`,
+              callback_data: `premium:card:${months}`,
+              style: "primary",
+            }]),
+          ],
+        },
+      });
+      return;
+    }
     if (action === "duration") {
+      const premiumSettings = getPremiumSettings();
       await ctx.reply("📅 Premium muddatini tanlang:", {
         reply_markup: {
           inline_keyboard: [
             ...[1, 3, 12].map((months) => [{
-              text: `${PREMIUM_PLANS[months].label} — ⭐ ${PREMIUM_PLANS[months].stars}`,
+              text: `${PREMIUM_PLANS[months].label} — ⭐ ${premiumSettings.stars[months]}`,
               callback_data: `premium:buy:${months}`,
               style: "primary",
             }]),
@@ -2309,9 +2356,10 @@ function registerUserScheduler(bot, options) {
     if (ctx.chat?.type !== "private") return;
     const months = Number(match[1]);
     const plan = PREMIUM_PLANS[months];
-    const cardNumber = process.env.USERBOT_PREMIUM_CARD_NUMBER || "";
-    const cardOwner = process.env.USERBOT_PREMIUM_CARD_OWNER || "";
-    const cardPrices = { 1: "50 000", 3: "120 000", 12: "400 000" };
+    const premiumSettings = getPremiumSettings();
+    const cardNumber = premiumSettings.cardNumber;
+    const cardOwner = premiumSettings.cardOwner;
+    const cardPrices = premiumSettings.card;
     if (!cardNumber) {
       await ctx.reply("💳 Karta orqali to'lov hozircha sozlanmagan.");
       return;
@@ -2334,7 +2382,7 @@ function registerUserScheduler(bot, options) {
       `💳 ${plan.label} Premium uchun karta orqali to'lov\n\n` +
         `Karta: <code>${cardNumber}</code>\n` +
         `Karta egasi: ${cardOwner || "Sozlanmagan"}\n` +
-        `Summa: ${cardPrices[months]} so'm\n\n` +
+        `Summa: ${Number(cardPrices[months]).toLocaleString("uz-UZ")} so'm\n\n` +
         "To'lovni amalga oshirib, chek rasmini yoki to'lov izohini yuboring.",
       { parse_mode: "HTML" },
     );
@@ -2386,7 +2434,9 @@ function registerUserScheduler(bot, options) {
       `Summa: ${record.pendingCardPremium.amount} so'm\n` +
       `Izoh: ${receipt.caption || receipt.text || "Chek rasmi"}`;
     if (receipt.type === "photo") {
-      await bot.sendPhoto(doc.ownerId, receipt.fileId, {
+      await bot.api("sendPhoto", {
+        chat_id: doc.ownerId,
+        photo: receipt.fileId,
         caption,
       }).catch((error) => {
         console.error(`User scheduler ${doc._id} karta chekini egasiga yubora olmadi:`, error.message);

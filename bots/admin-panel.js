@@ -45,6 +45,9 @@ function panelMarkup(doc) {
         [{ text: "📊 Statistika", callback_data: "admin:stats" }],
         [{ text: "✏️ Salomlashuv matni", callback_data: "admin:welcome" }],
         [{ text: "📢 Obunachilarga xabar", callback_data: "admin:broadcast" }],
+        ...(doc.type === "user-scheduler"
+          ? [[{ text: "⭐ Premium sozlamalari", callback_data: "admin:premium" }]]
+          : []),
         [{ text: `🔒 Majburiy obunalar: ${count}`, callback_data: "admin:channel" }],
         ...channels.map((channel, index) => [
           {
@@ -382,6 +385,93 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     const action = pendingAction;
+    if (action === "premium-stars") {
+      const match = ctx.text.trim().match(/^(\d{1,7})\s*\/\s*(\d{1,7})\s*\/\s*(\d{1,7})$/);
+      if (!match) {
+        await ctx.reply("Format: `100/250/800` — 1 oy / 3 oy / 12 oy.");
+        return;
+      }
+      const stars = { 1: Number(match[1]), 3: Number(match[2]), 12: Number(match[3]) };
+      if (!Object.values(stars).every((value) => value >= 1 && value <= 1000000)) {
+        await ctx.reply("Stars narxlari 1 dan 1 000 000 gacha bo'lishi kerak.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.stars = stars;
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("Premium Stars narxlari saqlandi.", panelMarkup(doc));
+      return;
+    }
+
+    if (action === "premium-card-number") {
+      const cardNumber = ctx.text.trim().replace(/[^\d ]/g, "").replace(/\s+/g, " ").trim();
+      const digits = cardNumber.replace(/\D/g, "");
+      if (digits.length < 12 || digits.length > 30) {
+        await ctx.reply("Karta raqamini to'g'ri formatda yuboring.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.cardNumber = cardNumber;
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("Premium karta raqami saqlandi.", panelMarkup(doc));
+      return;
+    }
+
+    if (action === "premium-card-owner") {
+      const ownerName = ctx.text.trim().slice(0, 80);
+      if (ownerName.length < 2) {
+        await ctx.reply("Karta egasi ismini yuboring.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.cardOwner = ownerName;
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("Premium karta egasi saqlandi.", panelMarkup(doc));
+      return;
+    }
+
+    if (action === "premium-card-prices") {
+      const match = ctx.text.trim().match(/^(\d{1,9})\s*\/\s*(\d{1,9})\s*\/\s*(\d{1,9})$/);
+      if (!match) {
+        await ctx.reply("Format: `50000/120000/400000` — 1 oy / 3 oy / 12 oy.");
+        return;
+      }
+      const card = { 1: Number(match[1]), 3: Number(match[2]), 12: Number(match[3]) };
+      if (!Object.values(card).every((value) => value >= 1)) {
+        await ctx.reply("Karta narxlari musbat butun son bo'lishi kerak.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.card = card;
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("Premium karta narxlari saqlandi.", panelMarkup(doc));
+      return;
+    }
+
     if (action === "welcome") {
       const welcome = ctx.text.trim().slice(0, 4000);
       await Bots.updateOne(
@@ -423,7 +513,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:(stars|card|owner)|premium-card-prices|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -445,6 +535,52 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     switch (ctx.text) {
+      case "admin:premium:stars":
+        pendingAction = "premium-stars";
+        await ctx.reply("Stars narxlarini `100/250/800` formatida yuboring:\n1 oy / 3 oy / 12 oy.");
+        return;
+      case "admin:premium:card":
+        pendingAction = "premium-card-number";
+        await ctx.reply("Premium karta raqamini yuboring.");
+        return;
+      case "admin:premium:owner":
+        pendingAction = "premium-card-owner";
+        await ctx.reply("Premium karta egasi ismini yuboring.");
+        return;
+      case "admin:premium-card-prices":
+        pendingAction = "premium-card-prices";
+        await ctx.reply("Karta narxlarini `50000/120000/400000` formatida yuboring:\n1 oy / 3 oy / 12 oy (so'm).");
+        return;
+      case "admin:premium": {
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("Premium sozlamalari faqat User Bot uchun mavjud.");
+          return;
+        }
+        const premiumSettings = doc.premiumSettings || {};
+        const stars = premiumSettings.stars || { 1: 100, 3: 250, 12: 800 };
+        const card = premiumSettings.card || { 1: "50000", 3: "120000", 12: "400000" };
+        await ctx.edit(
+          `⭐ User Bot — Premium sozlamalari\n\n` +
+            `Stars narxlari:\n1 oy — ${stars[1]} Stars\n3 oy — ${stars[3]} Stars\n12 oy — ${stars[12]} Stars\n\n` +
+            `Karta raqami: ${premiumSettings.cardNumber || "Sozlanmagan"}\n` +
+            `Karta egasi: ${premiumSettings.cardOwner || "Sozlanmagan"}\n` +
+            `Karta narxlari:\n1 oy — ${Number(card[1]).toLocaleString("uz-UZ")} so'm\n` +
+            `3 oy — ${Number(card[3]).toLocaleString("uz-UZ")} so'm\n` +
+            `12 oy — ${Number(card[12]).toLocaleString("uz-UZ")} so'm`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "⭐ Stars narxlarini sozlash", callback_data: "admin:premium:stars" }],
+                [{ text: "💳 Karta raqamini sozlash", callback_data: "admin:premium:card" }],
+                [{ text: "👤 Karta egasini sozlash", callback_data: "admin:premium:owner" }],
+                [{ text: "💵 Karta narxlarini sozlash", callback_data: "admin:premium-card-prices" }],
+                [{ text: "⬅️ Orqaga", callback_data: "admin:stats" }],
+              ],
+            },
+          },
+        );
+        return;
+      }
       case "admin:stats": {
         const [total, today, linkedAccounts] = await Promise.all([
           Subs.countDocuments({ botId: doc._id }),

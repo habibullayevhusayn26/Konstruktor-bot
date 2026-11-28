@@ -177,6 +177,18 @@ test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
   assert.doesNotMatch(constructorBot, /PREMIUM TARIF/);
 });
 
+test("Premium UI has month options once and separate card payment", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const userScheduler = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  assert.match(userScheduler, /Karta orqali sotib olish/);
+  assert.doesNotMatch(userScheduler, /PREMIUM SOTIB OLISH/);
+  assert.match(userScheduler, /premium:card-duration/);
+});
+
 test("User Bot card Premium purchase stores receipt and admin approval flow", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -190,6 +202,20 @@ test("User Bot card Premium purchase stores receipt and admin approval flow", ()
   assert.match(userScheduler, /premium_card:no/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_NUMBER/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
+});
+
+test("User Bot admin can configure card and Stars Premium settings", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const adminPanel = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "admin-panel.js"),
+    "utf8",
+  );
+  assert.match(adminPanel, /Premium sozlamalari/);
+  assert.match(adminPanel, /premium-stars/);
+  assert.match(adminPanel, /premium-card-number/);
+  assert.match(adminPanel, /premium-card-owner/);
+  assert.match(adminPanel, /premium-card-prices/);
 });
 
 test("preview shows the exact text before activation without sending to target chats", async () => {
