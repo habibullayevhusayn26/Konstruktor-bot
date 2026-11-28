@@ -5,7 +5,7 @@
   const appMatch = window.location.pathname.match(/\/user-scheduler\/app\/(\d+)\/?$/);
   const $ = (id) => document.getElementById(id);
   let polling = false;
-  let phoneDigits = "";
+  let phoneNumber = "";
   let otpLength = 5;
   let resendSeconds = 60;
   let resendTimer = null;
@@ -83,6 +83,7 @@
   function normalizePhoneNumber(value) {
     let normalized = String(value || "").replace(/[^\d+]/g, "");
     normalized = normalized.replace(/(?!^)\+/g, "");
+    if (normalized.startsWith("00")) normalized = `+${normalized.slice(2)}`;
     if (/^\d{9,15}$/.test(normalized)) normalized = `+${normalized}`;
     return normalized;
   }
@@ -110,19 +111,26 @@
   }
 
   function validatePhone() {
-    $("sendBtn").disabled = !(phoneDigits.length === 9 && $("agree").checked);
+    $("sendBtn").disabled = !(/^\+[1-9]\d{7,14}$/.test(phoneNumber) && $("agree").checked);
   }
 
-  function formatLocalPhone(value) {
-    const digits = value.replace(/\D/g, "").slice(0, 9);
-    phoneDigits = digits;
-    return [digits.slice(0, 2), digits.slice(2, 5), digits.slice(5, 7), digits.slice(7, 9)]
-      .filter(Boolean)
-      .join(" ");
+  function formatInternationalPhone(value) {
+    phoneNumber = normalizePhoneNumber(value);
+    if (!phoneNumber) return "";
+    const match = phoneNumber.match(/^(\+\d{1,3})(.*)$/);
+    if (!match) return phoneNumber;
+    const rest = match[2].replace(/\D/g, "").slice(0, 12);
+    if (!rest) return match[1];
+    if (rest.length <= 3) return `${match[1]} ${rest}`;
+    if (rest.length <= 6) return `${match[1]} ${rest.slice(0, 3)} ${rest.slice(3)}`;
+    if (rest.length <= 8) {
+      return `${match[1]} ${rest.slice(0, 3)} ${rest.slice(3, 6)} ${rest.slice(6)}`;
+    }
+    return `${match[1]} ${rest.slice(0, 3)} ${rest.slice(3, 6)} ${rest.slice(6, 8)} ${rest.slice(8)}`;
   }
 
   $("phone").addEventListener("input", (event) => {
-    event.target.value = formatLocalPhone(event.target.value);
+    event.target.value = formatInternationalPhone(event.target.value);
     $("phoneField").classList.remove("err");
     validatePhone();
   });
@@ -256,8 +264,7 @@
     const button = $("sendBtn");
     setLoading(button, true);
     try {
-      const phone = `+998${phoneDigits}`;
-      const state = await request("start", { phoneNumber: phone, consent: true });
+      const state = await request("start", { phoneNumber, consent: true });
       updateView(state);
       if (["code", "password", "email", "email-code", "connecting", "processing"].includes(state.phase)) {
         void pollStatus();
@@ -276,7 +283,7 @@
     try {
       await request("cancel");
       const state = await request("start", {
-        phoneNumber: `+998${phoneDigits}`,
+        phoneNumber,
         consent: true,
       });
       updateView(state);

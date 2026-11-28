@@ -86,6 +86,7 @@ function httpError(message, statusCode) {
 function normalizePhoneNumber(value) {
   let normalized = String(value || "").replace(/[^\d+]/g, "");
   normalized = normalized.replace(/(?!^)\+/g, "");
+  if (normalized.startsWith("00")) normalized = `+${normalized.slice(2)}`;
   if (/^\d{9,15}$/.test(normalized)) normalized = `+${normalized}`;
   return normalized;
 }

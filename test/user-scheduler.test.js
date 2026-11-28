@@ -158,14 +158,18 @@ test("Mini App login UI keeps the original layout", () => {
   assert.match(html, /Ikki bosqichli parol/);
   assert.match(html, /class="otp"/);
   assert.match(html, /<div class="steps"/);
+  assert.doesNotMatch(html, /<span class="pre">\+998<\/span>/);
+  assert.match(html, /placeholder="\+998 90 123 45 67"/);
   assert.match(script, /otpCells/);
-  assert.match(script, /phoneDigits/);
+  assert.match(script, /phoneNumber/);
 });
 
 test("phone numbers with spaces are normalized before login", () => {
   assert.equal(normalizePhoneNumber("+998 90 123 45 67"), "+998901234567");
   assert.equal(normalizePhoneNumber("998 90-123-45-67"), "+998901234567");
   assert.equal(normalizePhoneNumber("+1 (415) 555 0123"), "+14155550123");
+  assert.equal(normalizePhoneNumber("00 44 20 7946 0958"), "+442079460958");
+  assert.equal(normalizePhoneNumber("+7 (495) 123-45-67"), "+74951234567");
 });
 
 test("Mini App initData verifies Telegram signatures, owner data, and freshness", () => {
