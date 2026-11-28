@@ -4,7 +4,6 @@ const crypto = require("node:crypto");
 const { Api, TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 const { NewMessage } = require("teleproto/events");
-const { EMOJI_IDS } = require("./premium-emojis");
 const { BotConstructor } = require("../bot-constructor");
 
 const MIN_INTERVAL_SECONDS = 10;
@@ -71,7 +70,7 @@ function formatInterval(seconds) {
 function makeAutoFooter(username) {
   const normalizedUsername = String(username || "").replace(/^@/, "");
   return normalizedUsername
-    ? `\n\n🤖 Xabar @${normalizedUsername} orqali yuborildi! ✅`
+    ? `\n\nXabar @${normalizedUsername} orqali yuborildi!`
     : "";
 }
 
@@ -563,11 +562,7 @@ function registerUserSchedulerSession(bot, options) {
           });
           break;
         case "custom_emoji":
-          convertedEntity = new Api.MessageEntityCustomEmoji({
-            ...params,
-            documentId: String(entity.custom_emoji_id),
-          });
-          break;
+          continue;
         case "spoiler":
           convertedEntity = new Api.MessageEntitySpoiler(params);
           break;
@@ -624,31 +619,13 @@ function registerUserSchedulerSession(bot, options) {
         : "\n\n";
     const footerWithSeparator = `${separator}${footer.replace(/^\n\n/, "")}`;
     const result = `${base}${footerWithSeparator}`;
-    const robotIndex = base.length + footerWithSeparator.indexOf("🤖");
-    const checkIndex = result.lastIndexOf("✅");
     const mentionIndex = result.indexOf("@", base.length);
     const mentionText = footerUsername ? `@${footerUsername}` : "";
-    const robotId = EMOJI_IDS["🤖"]?.[0];
-    const checkId = EMOJI_IDS["✅"]?.[0];
     const entities = [];
-    if (robotId) {
-      entities.push(new Api.MessageEntityCustomEmoji({
-        offset: robotIndex,
-        length: 2,
-        documentId: robotId,
-      }));
-    }
     if (mentionText && mentionIndex >= 0) {
       entities.push(new Api.MessageEntityMention({
         offset: mentionIndex,
         length: mentionText.length,
-      }));
-    }
-    if (checkId) {
-      entities.push(new Api.MessageEntityCustomEmoji({
-        offset: checkIndex,
-        length: 1,
-        documentId: checkId,
       }));
     }
     return { text: result, entities };
@@ -2013,7 +1990,10 @@ function registerUserSchedulerSession(bot, options) {
 function registerUserScheduler(bot, options) {
   const { doc, Bots, UserSchedulerUsers } = options;
   const createSessionBot = options.createSessionBot ||
-    ((token, botOptions) => new BotConstructor(token, botOptions));
+    ((token, botOptions) => new BotConstructor(token, {
+      ...botOptions,
+      disablePremiumEmoji: true,
+    }));
   const sessions = new Map();
   const pendingSessions = new Map();
   let migrationPromise = null;
@@ -2198,6 +2178,11 @@ function registerUserScheduler(bot, options) {
             ],
             [{ text: "⭐ PREMIUM SOTIB OLISH", callback_data: "premium:duration", style: "success" }],
             [
+              { text: "💳 Karta: 1 oy", callback_data: "premium:card:1", style: "primary" },
+              { text: "💳 Karta: 3 oy", callback_data: "premium:card:3", style: "primary" },
+              { text: "💳 Karta: 12 oy", callback_data: "premium:card:12", style: "primary" },
+            ],
+            [
               { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
               { text: "📨 To'lov tarixi", callback_data: "premium:history", style: "primary" },
             ],
@@ -2276,6 +2261,172 @@ function registerUserScheduler(bot, options) {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     await sendPremiumInvoice(ctx, Number(match[1]));
+  });
+
+  bot.onCallbackData(/^premium:card:(1|3|12)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.chat?.type !== "private") return;
+    const months = Number(match[1]);
+    const plan = PREMIUM_PLANS[months];
+    const cardNumber = process.env.USERBOT_PREMIUM_CARD_NUMBER || "";
+    const cardOwner = process.env.USERBOT_PREMIUM_CARD_OWNER || "";
+    const cardPrices = { 1: "50 000", 3: "120 000", 12: "400 000" };
+    if (!cardNumber) {
+      await ctx.reply("💳 Karta orqali to'lov hozircha sozlanmagan.");
+      return;
+    }
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: ctx.from.id },
+      {
+        $set: {
+          pendingCardPremium: {
+            months,
+            plan: plan.label,
+            amount: cardPrices[months],
+            requestedAt: new Date(),
+          },
+        },
+      },
+      { upsert: true },
+    );
+    await ctx.reply(
+      `💳 ${plan.label} Premium uchun karta orqali to'lov\n\n` +
+        `Karta: <code>${cardNumber}</code>\n` +
+        `Karta egasi: ${cardOwner || "Sozlanmagan"}\n` +
+        `Summa: ${cardPrices[months]} so'm\n\n` +
+        "To'lovni amalga oshirib, chek rasmini yoki to'lov izohini yuboring.",
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.onUpdate("message", async (ctx) => {
+    if (!ctx.from?.id || ctx.chat?.type !== "private") return;
+    const record = await UserSchedulerUsers.findOne({
+      botId: doc._id,
+      userId: ctx.from.id,
+      "pendingCardPremium.months": { $exists: true },
+    });
+    if (!record?.pendingCardPremium) return;
+
+    const message = ctx.message;
+    const receipt = message.photo
+      ? {
+          type: "photo",
+          fileId: message.photo.at(-1).file_id,
+          caption: String(message.caption || "").slice(0, 1000),
+        }
+      : {
+          type: "text",
+          text: String(message.text || "").trim().slice(0, 1000),
+        };
+    if (!receipt.text && !receipt.fileId) return;
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: ctx.from.id },
+      {
+        $set: {
+          "pendingCardPremium.receipt": receipt,
+          "pendingCardPremium.receivedAt": new Date(),
+        },
+      },
+    );
+    ctx.handled = true;
+
+    await ctx.reply(
+      "✅ Chek qabul qilindi.\nTo'lov admin tasdiqlashini kutmoqda.",
+      { reply_markup: { remove_keyboard: true } },
+    );
+
+    const cardId = `${doc._id}:${ctx.from.id}`;
+    const caption =
+      `💳 Karta orqali Premium to‘lovi\n` +
+      `Bot: @${doc.username}\n` +
+      `Foydalanuvchi ID: ${ctx.from.id}\n` +
+      `Tarif: ${record.pendingCardPremium.plan}\n` +
+      `Summa: ${record.pendingCardPremium.amount} so'm\n` +
+      `Izoh: ${receipt.caption || receipt.text || "Chek rasmi"}`;
+    if (receipt.type === "photo") {
+      await bot.sendPhoto(doc.ownerId, receipt.fileId, {
+        caption,
+      }).catch((error) => {
+        console.error(`User scheduler ${doc._id} karta chekini egasiga yubora olmadi:`, error.message);
+      });
+    } else {
+      await bot.sendMessage(doc.ownerId, caption).catch((error) => {
+        console.error(`User scheduler ${doc._id} to'lov izohini egasiga yubora olmadi:`, error.message);
+      });
+    }
+    await bot.sendMessage(doc.ownerId, "To‘lovni tasdiqlaysizmi?", {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ Tasdiqlash", callback_data: `premium_card:ok:${doc._id}:${ctx.from.id}`, style: "success" },
+          { text: "❌ Rad etish", callback_data: `premium_card:no:${doc._id}:${ctx.from.id}`, style: "danger" },
+        ]],
+      },
+    }).catch(() => {});
+  });
+
+  bot.onCallbackData(/^premium_card:(ok|no):(\d+):(\d+)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.from?.id !== doc.ownerId) {
+      await ctx.reply("Bu to'lovni faqat bot egasi tasdiqlay oladi.");
+      return;
+    }
+    const action = match[1];
+    const botId = Number(match[2]);
+    const userId = Number(match[3]);
+    if (botId !== doc._id) return;
+    const record = await UserSchedulerUsers.findOne({
+      botId: doc._id,
+      userId,
+      "pendingCardPremium.months": { $exists: true },
+    });
+    if (!record?.pendingCardPremium) {
+      await ctx.reply("Bu to'lov so'rovi allaqachon ko'rib chiqilgan.");
+      return;
+    }
+    if (action === "no") {
+      await UserSchedulerUsers.updateOne(
+        { botId: doc._id, userId },
+        { $unset: { pendingCardPremium: "" } },
+      );
+      await bot.sendMessage(userId, "❌ Karta orqali Premium to‘lovi rad etildi. Chekni tekshirib qayta yuboring.");
+      await ctx.reply("To'lov rad etildi.");
+      return;
+    }
+
+    const now = new Date();
+    const currentUntil = record.premiumUntil instanceof Date
+      ? record.premiumUntil
+      : record.premiumUntil
+        ? new Date(record.premiumUntil)
+        : null;
+    const start = currentUntil && currentUntil > now ? currentUntil : now;
+    const premiumUntil = new Date(start);
+    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + record.pendingCardPremium.months);
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId },
+      {
+        $set: {
+          premium: true,
+          premiumUntil,
+          premiumPlan: record.pendingCardPremium.plan,
+        },
+        $push: {
+          premiumHistory: {
+            plan: record.pendingCardPremium.plan,
+            amount: record.pendingCardPremium.amount,
+            paidAt: now,
+            method: "card",
+          },
+        },
+        $unset: { pendingCardPremium: "" },
+      },
+    );
+    await bot.sendMessage(
+      userId,
+      `✅ Karta orqali to‘lov tasdiqlandi.\nPremium muddat: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama o‘chirildi.`,
+    );
+    await ctx.reply("Premium to‘lov tasdiqlandi.");
   });
 
   bot.onUpdate("pre_checkout_query", async (ctx) => {

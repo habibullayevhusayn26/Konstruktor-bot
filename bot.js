@@ -165,7 +165,10 @@ async function buildChild(doc) {
     throw new Error("Yaratilgan bot fayli ID'si mos kelmadi.");
   }
 
-  const child = new BotConstructor(decrypt(doc.token));
+  const child = new BotConstructor(
+    decrypt(doc.token),
+    { disablePremiumEmoji: doc.type === "user-scheduler" },
+  );
   child.config = doc;
   const templateControls = generated.register(child, {
     doc,

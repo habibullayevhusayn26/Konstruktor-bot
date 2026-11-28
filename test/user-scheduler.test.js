@@ -127,9 +127,9 @@ test("user scheduler interval supports ten seconds to thirty days", () => {
 test("auto-message footer preserves base content and adds one blank line", () => {
   assert.equal(
     makeAutoFooter("habibullayev_28"),
-    "\n\n🤖 Xabar @habibullayev_28 orqali yuborildi! ✅",
+    "\n\nXabar @habibullayev_28 orqali yuborildi!",
   );
-  assert.equal(makeAutoFooter("@habibullayev_28"), "\n\n🤖 Xabar @habibullayev_28 orqali yuborildi! ✅");
+  assert.equal(makeAutoFooter("@habibullayev_28"), "\n\nXabar @habibullayev_28 orqali yuborildi!");
   assert.equal(makeAutoFooter(""), "");
 });
 
@@ -156,7 +156,7 @@ test("footer uses the live bot username instead of a stale username", async () =
     decryptSecret: (value) => value,
   });
   await runtime.stop();
-  assert.equal(makeAutoFooter("live_bot_name"), "\n\n🤖 Xabar @live_bot_name orqali yuborildi! ✅");
+  assert.equal(makeAutoFooter("live_bot_name"), "\n\nXabar @live_bot_name orqali yuborildi!");
 });
 
 test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
@@ -175,6 +175,21 @@ test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
   assert.match(userScheduler, /currency: "XTR"/);
   assert.doesNotMatch(constructorBot, /callback_data: "premium/);
   assert.doesNotMatch(constructorBot, /PREMIUM TARIF/);
+});
+
+test("User Bot card Premium purchase stores receipt and admin approval flow", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const userScheduler = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  assert.match(userScheduler, /premium:card:\(1\|3\|12\)/);
+  assert.match(userScheduler, /pendingCardPremium/);
+  assert.match(userScheduler, /premium_card:ok/);
+  assert.match(userScheduler, /premium_card:no/);
+  assert.match(userScheduler, /USERBOT_PREMIUM_CARD_NUMBER/);
+  assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
 });
 
 test("Mini App URL requires HTTPS and preserves the configured path prefix", () => {
@@ -797,10 +812,10 @@ test("text schedules send directly even if source MTProto copy validation fails"
     assert.equal(sent.length, 1);
     assert.equal(
       sent[0].params.message,
-      "Oddiy matn xabari\n\n🤖 Xabar @test_user_bot orqali yuborildi! ✅",
+      "Oddiy matn xabari\n\nXabar @test_user_bot orqali yuborildi!",
     );
-    assert.ok(sent[0].params.formattingEntities.some(
-      (entity) => entity.className === "MessageEntityCustomEmoji",
+    assert.ok(sent[0].params.formattingEntities.every(
+      (entity) => entity.className !== "MessageEntityCustomEmoji",
     ));
     await runtime.stop();
   } finally {

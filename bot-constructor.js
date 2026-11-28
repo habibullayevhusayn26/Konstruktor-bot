@@ -99,6 +99,19 @@ class BotConstructor {
   }
 
   async api(method, payload = {}) {
+    if (this.options.disablePremiumEmoji) {
+      const plainPayload = { ...payload };
+      if (plainPayload.reply_markup) {
+        plainPayload.reply_markup = this._stripPremiumEmojiMarkup(plainPayload.reply_markup);
+      }
+      if (plainPayload.entities) {
+        plainPayload.entities = plainPayload.entities.filter((entity) => entity.type !== "custom_emoji");
+      }
+      if (plainPayload.caption_entities) {
+        plainPayload.caption_entities = plainPayload.caption_entities.filter((entity) => entity.type !== "custom_emoji");
+      }
+      return this._apiRequest(method, plainPayload);
+    }
     const decorated = decoratePayload(method, payload);
     try {
       return await this._apiRequest(method, decorated.payload);
@@ -126,6 +139,25 @@ class BotConstructor {
       throw error;
     }
     return data.result;
+  }
+
+  _stripPremiumEmojiMarkup(markup) {
+    if (!markup || typeof markup !== "object") return markup;
+    const result = { ...markup };
+    for (const field of ["inline_keyboard", "keyboard"]) {
+      if (!Array.isArray(result[field])) continue;
+      result[field] = result[field].map((row) =>
+        Array.isArray(row)
+          ? row.map((button) => {
+              if (!button || typeof button !== "object") return button;
+              const plain = { ...button };
+              delete plain.icon_custom_emoji_id;
+              return plain;
+            })
+          : row,
+      );
+    }
+    return result;
   }
 
   _logPremiumEmojiFallback() {
@@ -177,6 +209,17 @@ class BotConstructor {
   }
 
   async _sendFileUpload(method, field, mimeType, chatId, file, filename, options) {
+    if (this.options.disablePremiumEmoji) {
+      const plainOptions = { ...options };
+      delete plainOptions.disablePremiumEmoji;
+      if (plainOptions.reply_markup) {
+        plainOptions.reply_markup = this._stripPremiumEmojiMarkup(plainOptions.reply_markup);
+      }
+      if (plainOptions.caption_entities) {
+        plainOptions.caption_entities = plainOptions.caption_entities.filter((entity) => entity.type !== "custom_emoji");
+      }
+      options = plainOptions;
+    }
     const decorated = decoratePayload(method, options);
     const upload = async (uploadOptions) => {
       const form = new FormData();
