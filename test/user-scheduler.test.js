@@ -133,6 +133,20 @@ test("auto-message footer preserves base content and adds one blank line", () =>
   assert.equal(makeAutoFooter(""), "");
 });
 
+test("footer uses the live bot username instead of a stale username", async () => {
+  const bot = new BotConstructor("test-token");
+  bot.api = async (method) => method === "getMe"
+    ? { username: "live_bot_name" }
+    : true;
+  const { runtime } = registerTestScheduler(bot, {
+    doc: { _id: 123456, ownerId: 77, username: "stale_bot_name" },
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+  });
+  await runtime.stop();
+  assert.equal(makeAutoFooter("live_bot_name"), "\n\n🤖 Xabar @live_bot_name orqali yuborildi! ✅");
+});
+
 test("Mini App URL requires HTTPS and preserves the configured path prefix", () => {
   assert.equal(
     buildMiniAppUrl("https://maker.example/base/", 123456),

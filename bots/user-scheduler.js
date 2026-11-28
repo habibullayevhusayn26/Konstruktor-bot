@@ -592,7 +592,6 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   async function refreshFooterUsername() {
-    if (footerUsername) return footerUsername;
     try {
       const botInfo = await bot.api("getMe");
       const liveUsername = String(botInfo?.username || "").replace(/^@/, "");
@@ -662,6 +661,41 @@ function registerUserSchedulerSession(bot, options) {
       formattingEntities: entities,
       ...(buttons ? { buttons } : {}),
     };
+  }
+
+  async function sendAutoFooterMessage(target) {
+    const footerText = makeAutoFooter(footerUsername).replace(/^\n\n/, "");
+    if (!footerText || typeof userClient.sendMessage !== "function") return false;
+    const formattingEntities = [];
+    const robotId = EMOJI_IDS["🤖"]?.[0];
+    const checkId = EMOJI_IDS["✅"]?.[0];
+    if (robotId) {
+      formattingEntities.push(new Api.MessageEntityCustomEmoji({
+        offset: 0,
+        length: 2,
+        documentId: robotId,
+      }));
+    }
+    const mentionIndex = footerText.indexOf("@");
+    if (mentionIndex >= 0) {
+      const mentionLength = footerText.indexOf(" ", mentionIndex) - mentionIndex;
+      formattingEntities.push(new Api.MessageEntityMention({
+        offset: mentionIndex,
+        length: mentionLength > 0 ? mentionLength : footerUsername.length + 1,
+      }));
+    }
+    if (checkId) {
+      formattingEntities.push(new Api.MessageEntityCustomEmoji({
+        offset: footerText.lastIndexOf("✅"),
+        length: 1,
+        documentId: checkId,
+      }));
+    }
+    await userClient.sendMessage(target, {
+      message: footerText,
+      formattingEntities,
+    });
+    return true;
   }
 
   function isForwardedFromAnotherUser(message) {
@@ -752,46 +786,16 @@ function registerUserSchedulerSession(bot, options) {
   async function sendScheduledMessage(target, schedule) {
     await refreshFooterUsername();
     if (!isValidMessageRef(schedule.messageRef)) {
-      return userClient.sendMessage(
-        target,
-        buildTextSendParams(schedule.message, {}),
-      );
+      await userClient.sendMessage(target, buildTextSendParams(schedule.message, {}));
+      await sendAutoFooterMessage(target);
+      return;
     }
     if (
       schedule.messageRef.description === "matn" &&
       typeof schedule.messageRef.text === "string" &&
       schedule.messageRef.text
     ) {
-      const sourcePeer = await getSourceBotPeer();
-      const mtprotoIds = schedule.messageRef.mtprotoMessageIds;
       const sendParams = buildTextSendParams(schedule.messageRef.text, schedule.messageRef);
-      if (mtprotoIds?.length) {
-        try {
-          const sent = schedule.messageRef.forwarded
-            ? await userClient.forwardMessages(target, {
-                messages: mtprotoIds,
-                fromPeer: sourcePeer,
-              })
-            : await userClient.copyMessages(target, {
-                messages: mtprotoIds,
-                fromPeer: sourcePeer,
-              });
-          if (Array.isArray(sent) && sent[0] && typeof userClient.editMessage === "function") {
-            await userClient.editMessage(target, {
-              message: sent[0],
-              text: sendParams.message,
-              formattingEntities: sendParams.formattingEntities,
-              ...(sendParams.buttons ? { buttons: sendParams.buttons } : {}),
-            });
-            return;
-          }
-        } catch (error) {
-          console.error(
-            `User scheduler ${doc._id} matn manbasini footer bilan tahrirlay olmadi:`,
-            error?.message || error?.errorMessage || error?.name,
-          );
-        }
-      }
       await userClient.sendMessage(target, sendParams);
       return;
     }
@@ -867,44 +871,8 @@ function registerUserSchedulerSession(bot, options) {
     const sent = schedule.messageRef.forwarded
       ? await userClient.forwardMessages(target, params)
       : await userClient.copyMessages(target, params);
-    if (Array.isArray(sent) && sent.length && typeof userClient.editMessage === "function") {
-      for (let index = 0; index < sent.length; index++) {
-        const sentMessage = sent[index];
-        if (!sentMessage) continue;
-        const originalCaption =
-          typeof sentMessage.message === "string"
-            ? sentMessage.message
-            : index === 0
-              ? schedule.messageRef.text || ""
-              : "";
-        const captionParams =
-          index === 0
-            ? buildTextSendParams(originalCaption, schedule.messageRef)
-            : appendAutoFooter(originalCaption);
-        try {
-          await userClient.editMessage(target, {
-            message: sentMessage,
-            text: captionParams.text || captionParams.message,
-            formattingEntities: captionParams.entities || captionParams.formattingEntities || [],
-          });
-        } catch (error) {
-          console.error(
-            `User scheduler ${doc._id} media izohiga footer qo'shib bo'lmadi:`,
-            error?.message || error?.errorMessage || error?.name,
-          );
-          const footerText = makeAutoFooter(footerUsername).replace(/^\n\n/, "");
-          if (footerText) {
-            await userClient.sendMessage(target, {
-              message: footerText,
-            }).catch((fallbackError) => {
-              console.error(
-                `User scheduler ${doc._id} media footerini alohida yubora olmadi:`,
-                fallbackError?.message || fallbackError?.errorMessage || fallbackError?.name,
-              );
-            });
-          }
-        }
-      }
+    if (Array.isArray(sent) && sent.length) {
+      await sendAutoFooterMessage(target);
     }
     if (
       !Array.isArray(sent) ||
