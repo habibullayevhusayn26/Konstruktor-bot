@@ -187,6 +187,9 @@ test("Premium UI has month options once and separate card payment", () => {
   assert.match(userScheduler, /Karta orqali sotib olish/);
   assert.doesNotMatch(userScheduler, /PREMIUM SOTIB OLISH/);
   assert.match(userScheduler, /premium:card-duration/);
+  assert.match(userScheduler, /createUniqueCardTopup/);
+  assert.match(userScheduler, /pendingUniqueTopups/);
+  assert.match(userScheduler, /expiresAt/);
 });
 
 test("User Bot supports automatic card payment monitoring and admin controls", () => {

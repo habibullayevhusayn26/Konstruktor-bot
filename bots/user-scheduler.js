@@ -2798,6 +2798,52 @@ function registerUserScheduler(bot, options) {
     };
   }
 
+  async function createUniqueCardTopup(userId, months) {
+    const premiumSettings = getPremiumSettings();
+    const baseAmount = Number(premiumSettings.card[months]) || 50000;
+    const now = Date.now();
+    let uniqueAmount = baseAmount;
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const records = await UserSchedulerUsers.find({
+        botId: doc._id,
+        "pendingUniqueTopups.uniqueAmount": uniqueAmount,
+        "pendingUniqueTopups.expiresAt": { $gt: new Date(now) },
+      }).limit(1).toArray();
+      if (!records.length) break;
+      uniqueAmount = baseAmount + Math.floor(Math.random() * 700) + 100;
+    }
+    const expiresAt = new Date(now + 5 * 60_000);
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId },
+      {
+        $set: {
+          pendingUniqueTopups: [
+            ...(await getPendingUniqueTopups(userId)).filter((topup) =>
+              new Date(topup.expiresAt).getTime() > now &&
+              topup.uniqueAmount !== uniqueAmount
+            ),
+            {
+              months,
+              baseAmount,
+              uniqueAmount,
+              expiresAt,
+              createdAt: new Date(now),
+            },
+          ],
+        },
+      },
+      { upsert: true },
+    );
+    return { uniqueAmount, expiresAt };
+  }
+
+  async function getPendingUniqueTopups(userId) {
+    const record = await UserSchedulerUsers.findOne({ botId: doc._id, userId });
+    return Array.isArray(record?.pendingUniqueTopups)
+      ? record.pendingUniqueTopups
+      : [];
+  }
+
   async function showPremium(ctx) {
     const status = await getPremiumStatus(ctx.from.id);
     const premiumSettings = getPremiumSettings();
@@ -2940,6 +2986,7 @@ function registerUserScheduler(bot, options) {
       await ctx.reply("💳 Karta orqali to'lov hozircha sozlanmagan.");
       return;
     }
+    const unique = await createUniqueCardTopup(ctx.from.id, months);
     await UserSchedulerUsers.updateOne(
       { botId: doc._id, userId: ctx.from.id },
       {
@@ -2947,7 +2994,8 @@ function registerUserScheduler(bot, options) {
           pendingCardPremium: {
             months,
             plan: plan.label,
-            amount: cardPrices[months],
+            amount: unique.uniqueAmount,
+            baseAmount: cardPrices[months],
             requestedAt: new Date(),
           },
         },
@@ -2958,8 +3006,9 @@ function registerUserScheduler(bot, options) {
       `💳 ${plan.label} Premium uchun karta orqali to'lov\n\n` +
         `Karta: <code>${cardNumber}</code>\n` +
         `Karta egasi: ${cardOwner || "Sozlanmagan"}\n` +
-        `Summa: ${Number(cardPrices[months]).toLocaleString("uz-UZ")} so'm\n\n` +
-        "To'lovni amalga oshiring. Avtotolov to'lovni aniqlagach Premiumni avtomatik yoqadi.",
+        `To'lov summasi: <b>${Number(unique.uniqueAmount).toLocaleString("uz-UZ")} so'm</b>\n` +
+        `Bu summa faqat sizga tegishli va ${Math.ceil((unique.expiresAt - Date.now()) / 60_000)} daqiqa amal qiladi.\n\n` +
+        "Faqat shu exact summani kartaga yuboring. Avtotolov to‘lovni aniqlagach Premium avtomatik faollashadi.",
       { parse_mode: "HTML" },
     );
   });
