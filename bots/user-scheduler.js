@@ -444,6 +444,7 @@ function registerUserSchedulerSession(bot, options) {
       `🖼 USER BOT — BOSHQARUV PANELI\n` +
       `━━━━━━━━━━━━━━━━━━\n\n` +
       `👤 Akkaunt: ${account}\n` +
+      `🆔 Telegram ID: ${ownerId}\n` +
       `⭐ Tarif: ${doc.premium ? "Premium" : "Bepul"}\n` +
       `💰 Balans: ${Number(doc.balance) || 0} so'm\n` +
       `💬 Tanlangan chatlar: ${chatCount} ta\n` +
@@ -2250,12 +2251,7 @@ function registerUserScheduler(bot, options) {
     UserSchedulerUsers,
     api: tolovApi,
     notifyUser: (userId, text) => bot.sendMessage(userId, text),
-    onPaymentApplied: async (userId, user) => {
-      const runtime = sessions.get(userId);
-      if (!runtime || !user) return;
-      runtime.doc.balance = Number(user.balance) || 0;
-      runtime.doc.premium = Boolean(user.premiumUntil && new Date(user.premiumUntil) > new Date());
-    },
+    onPaymentApplied: updateUserRuntime,
   });
 
   async function migrateLegacyOwnerSession() {
@@ -2449,6 +2445,7 @@ function registerUserScheduler(bot, options) {
         `• Premium emoji, rasm, video va fayllar\n` +
         `• Xabarda reklama yo'q\n\n` +
         `Holatingiz: ${statusText}\n` +
+          `🆔 Telegram ID: ${ctx.from.id}\n` +
         `Balans: ${status.balance.toLocaleString("uz-UZ")} so'm`,
       {
         reply_markup: {
@@ -2550,7 +2547,8 @@ function registerUserScheduler(bot, options) {
       const status = await getPremiumStatus(ctx.from.id);
       const { tolovApiPrices } = getPremiumSettings();
       await ctx.reply(
-        `Balans: ${status.balance.toLocaleString("uz-UZ")} so'm\nBalansdan Premium muddatini tanlang:`,
+        `🆔 Telegram ID: ${ctx.from.id}\n` +
+          `Balans: ${status.balance.toLocaleString("uz-UZ")} so'm\nBalansdan Premium muddatini tanlang:`,
         {
           reply_markup: {
             inline_keyboard: [1, 3, 12].map((months) => [{
@@ -2743,6 +2741,16 @@ function registerUserScheduler(bot, options) {
     return userRuntime ? userRuntime.controls.cancelPending() : false;
   }
 
+  async function updateUserRuntime(userId, user) {
+    const runtime = sessions.get(userId);
+    if (!runtime) return;
+    const record = user || await UserSchedulerUsers.findOne({ botId: doc._id, userId });
+    if (!record) return;
+    const premiumUntil = record.premiumUntil ? new Date(record.premiumUntil) : null;
+    runtime.doc.balance = Number(record.balance) || 0;
+    runtime.doc.premium = Boolean(premiumUntil && premiumUntil > new Date());
+  }
+
   async function stop() {
     stopping = true;
     tolovPayments.stop();
@@ -2800,6 +2808,7 @@ function registerUserScheduler(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
+    updateUser: updateUserRuntime,
   };
 }
 

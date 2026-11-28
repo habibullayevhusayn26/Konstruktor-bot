@@ -46,7 +46,10 @@ function panelMarkup(doc) {
         [{ text: "✏️ Salomlashuv matni", callback_data: "admin:welcome" }],
         [{ text: "📢 Obunachilarga xabar", callback_data: "admin:broadcast" }],
         ...(doc.type === "user-scheduler"
-          ? [[{ text: "⭐ Premium sozlamalari", callback_data: "admin:premium" }]]
+          ? [
+              [{ text: "⭐ Premium sozlamalari", callback_data: "admin:premium" }],
+              [{ text: "👥 Foydalanuvchini boshqarish", callback_data: "admin:user:search" }],
+            ]
           : []),
         [{ text: `🔒 Majburiy obunalar: ${count}`, callback_data: "admin:channel" }],
         ...channels.map((channel, index) => [
@@ -195,9 +198,18 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
   });
 }
 
-function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel, encryptSecret }) {
+function registerAdminPanel(bot, {
+  doc,
+  Bots,
+  Subs,
+  UserSchedulerUsers,
+  onCancel,
+  encryptSecret,
+  onUserUpdated,
+}) {
   let pendingAction = null;
   let broadcastDraft = null;
+  let selectedUserId = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
   const panelText = () => {
     const channels = getRequiredChannels(doc);
@@ -206,6 +218,31 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       : "Sozlanmagan";
     return `🛠 @${doc.username} botining admin paneli\n\n🔒 Majburiy obunalar:\n${lines}`;
   };
+  const getManagedUser = (userId) =>
+    UserSchedulerUsers.findOne({ botId: doc._id, userId });
+  const managedUserText = (user) => {
+    const premiumUntil = user.premiumUntil ? new Date(user.premiumUntil) : null;
+    const premiumActive = Boolean(premiumUntil && premiumUntil > new Date());
+    return `👤 Foydalanuvchi\n🆔 Telegram ID: ${user.userId}\n` +
+      `💰 Balans: ${(Number(user.balance) || 0).toLocaleString("uz-UZ")} so'm\n` +
+      `⭐ Premium: ${premiumActive
+        ? `Faol — ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`
+        : "Faol emas"}`;
+  };
+  const managedUserMarkup = (userId) => ({
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "💰 Balansni o'zgartirish", callback_data: `admin:user:balance:${userId}` }],
+        [
+          { text: "⭐ +1 oy", callback_data: `admin:user:premium:1:${userId}` },
+          { text: "⭐ +3 oy", callback_data: `admin:user:premium:3:${userId}` },
+          { text: "⭐ +12 oy", callback_data: `admin:user:premium:12:${userId}` },
+        ],
+        [{ text: "🚫 Premiumni o'chirish", callback_data: `admin:user:premium:off:${userId}`, style: "danger" }],
+        [{ text: "🔎 Boshqa foydalanuvchini qidirish", callback_data: "admin:user:search" }],
+      ],
+    },
+  });
   const attachSelectedChat = async (ctx, chatRef) => {
     try {
       await setRequiredChannel(bot, Bots, doc, chatRef);
@@ -435,6 +472,84 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       return;
     }
 
+    if (pendingAction === "user-search") {
+      const userIdText = ctx.text?.trim() || "";
+      const userId = /^\d{1,20}$/.test(userIdText) ? Number(userIdText) : NaN;
+      if (!Number.isSafeInteger(userId) || userId < 1) {
+        await ctx.reply("Telegram ID musbat butun son bo'lishi kerak. Qayta yuboring yoki /cancel bosing.");
+        return;
+      }
+      if (doc.type !== "user-scheduler" || typeof UserSchedulerUsers?.findOne !== "function") {
+        pendingAction = null;
+        await ctx.reply("User Bot foydalanuvchilar bazasi mavjud emas.");
+        return;
+      }
+      const user = await getManagedUser(userId);
+      pendingAction = null;
+      if (!user) {
+        selectedUserId = null;
+        await ctx.reply(`Telegram ID ${userId} bo'yicha ushbu User Bot foydalanuvchisi topilmadi.`);
+        return;
+      }
+      selectedUserId = userId;
+      await ctx.reply(managedUserText(user), managedUserMarkup(userId));
+      return;
+    }
+
+    if (pendingAction === "user-balance-edit") {
+      const balanceText = (ctx.text || "").trim().replace(/\s/g, "");
+      const balance = /^\d+$/.test(balanceText) ? Number(balanceText) : NaN;
+      if (!Number.isSafeInteger(balance) || balance < 0) {
+        await ctx.reply("Balans 0 yoki undan katta butun so'm bo'lishi kerak. Qayta yuboring yoki /cancel bosing.");
+        return;
+      }
+      if (
+        !Number.isSafeInteger(selectedUserId) ||
+        typeof UserSchedulerUsers?.findOne !== "function" ||
+        typeof UserSchedulerUsers?.updateOne !== "function"
+      ) {
+        pendingAction = null;
+        await ctx.reply("Avval foydalanuvchini qidiring.");
+        return;
+      }
+      const user = await getManagedUser(selectedUserId);
+      if (!user) {
+        pendingAction = null;
+        selectedUserId = null;
+        await ctx.reply("Foydalanuvchi topilmadi. Qaytadan qidiring.");
+        return;
+      }
+      const oldBalance = Number(user.balance) || 0;
+      const filter = { botId: doc._id, userId: selectedUserId };
+      filter.balance = Object.prototype.hasOwnProperty.call(user, "balance")
+        ? user.balance
+        : { $exists: false };
+      const changedAt = new Date();
+      const saved = await UserSchedulerUsers.updateOne(
+        filter,
+        {
+          $set: { balance },
+          $push: {
+            balanceAdminHistory: {
+              adminId: ctx.from.id,
+              oldBalance,
+              newBalance: balance,
+              changedAt,
+            },
+          },
+        },
+      );
+      if (saved.matchedCount !== 1) {
+        await ctx.reply("Foydalanuvchi balansi bir vaqtda o'zgardi. Qaytadan qidirib, yangilangan qiymatni tekshiring.");
+        return;
+      }
+      pendingAction = null;
+      const updatedUser = await getManagedUser(selectedUserId);
+      await onUserUpdated?.(selectedUserId, updatedUser);
+      await ctx.reply(managedUserText(updatedUser), managedUserMarkup(selectedUserId));
+      return;
+    }
+
     if (pendingAction === "broadcast-media") {
       const hasMedia =
         ctx.message.photo?.length ||
@@ -612,7 +727,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|premium:tolov|premium:tolov:shop-id|premium:tolov:shop-key|premium:tolov-search|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|premium:tolov|premium:tolov:shop-id|premium:tolov:shop-key|premium:tolov-search|user:search|user:balance:\d+|user:premium:(1|3|12|off):\d+|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -633,7 +748,110 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       return;
     }
 
+    const userPremiumMatch = ctx.text.match(/^admin:user:premium:(1|3|12|off):(\d+)$/);
+    if (userPremiumMatch) {
+      if (
+        doc.type !== "user-scheduler" ||
+        typeof UserSchedulerUsers?.findOne !== "function" ||
+        typeof UserSchedulerUsers?.updateOne !== "function"
+      ) {
+        await ctx.reply("User Bot foydalanuvchilar bazasi mavjud emas.");
+        return;
+      }
+      const targetUserId = Number(userPremiumMatch[2]);
+      if (!Number.isSafeInteger(targetUserId) || targetUserId < 1) {
+        await ctx.reply("Foydalanuvchi Telegram ID'si noto'g'ri.");
+        return;
+      }
+      selectedUserId = targetUserId;
+      const user = await getManagedUser(targetUserId);
+      if (!user) {
+        selectedUserId = null;
+        await ctx.reply("Foydalanuvchi topilmadi. Qaytadan qidiring.");
+        return;
+      }
+
+      pendingAction = null;
+      const changedAt = new Date();
+      const storedUntil = user.premiumUntil ? new Date(user.premiumUntil) : null;
+      const currentUntil = storedUntil && Number.isFinite(storedUntil.getTime())
+        ? storedUntil
+        : null;
+      const action = userPremiumMatch[1];
+      let premiumUntil;
+      let premiumPlan;
+      let months;
+      if (action === "off") {
+        premiumUntil = changedAt;
+        premiumPlan = null;
+      } else {
+        months = Number(action);
+        const start = currentUntil && currentUntil > changedAt ? currentUntil : changedAt;
+        premiumUntil = new Date(start);
+        premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + months);
+        premiumPlan = `${months} oy`;
+      }
+      const saved = await UserSchedulerUsers.updateOne(
+        { botId: doc._id, userId: targetUserId },
+        {
+          $set: {
+            premium: action !== "off",
+            premiumUntil,
+            premiumPlan,
+          },
+          $push: {
+            premiumAdminHistory: {
+              adminId: ctx.from.id,
+              action: action === "off" ? "deactivate" : "activate",
+              ...(months ? { months } : {}),
+              previousPremiumUntil: currentUntil,
+              premiumUntil,
+              changedAt,
+            },
+          },
+        },
+      );
+      if (saved.matchedCount !== 1) {
+        await ctx.reply("Foydalanuvchi holatini saqlab bo'lmadi. Qaytadan qidiring.");
+        return;
+      }
+      const updatedUser = await getManagedUser(targetUserId);
+      await onUserUpdated?.(targetUserId, updatedUser);
+      await ctx.reply(managedUserText(updatedUser), managedUserMarkup(targetUserId));
+      return;
+    }
+
+    const userBalanceMatch = ctx.text.match(/^admin:user:balance:(\d+)$/);
+    if (userBalanceMatch) {
+      if (doc.type !== "user-scheduler" || typeof UserSchedulerUsers?.findOne !== "function") {
+        await ctx.reply("User Bot foydalanuvchilar bazasi mavjud emas.");
+        return;
+      }
+      const targetUserId = Number(userBalanceMatch[1]);
+      if (!Number.isSafeInteger(targetUserId) || targetUserId < 1) {
+        await ctx.reply("Foydalanuvchi Telegram ID'si noto'g'ri.");
+        return;
+      }
+      if (!await getManagedUser(targetUserId)) {
+        await ctx.reply("Foydalanuvchi topilmadi. Qaytadan qidiring.");
+        return;
+      }
+      selectedUserId = targetUserId;
+      pendingAction = "user-balance-edit";
+      await ctx.reply(`🆔 ${targetUserId} uchun yangi balansni so'mda yuboring (0 yoki undan katta butun son). Bu joriy balansni o'rnatadi; /cancel — bekor qilish.`);
+      return;
+    }
+
     switch (ctx.text) {
+      case "admin:user:search":
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("Foydalanuvchilarni boshqarish faqat User Bot uchun mavjud.");
+          return;
+        }
+        selectedUserId = null;
+        pendingAction = "user-search";
+        await ctx.reply("Qidirmoqchi bo'lgan foydalanuvchining Telegram ID raqamini yuboring (/cancel — bekor qilish).");
+        return;
       case "admin:premium:stars":
         pendingAction = "premium-stars";
         await ctx.reply("Stars narxlarini `100/250/800` formatida yuboring:\n1 oy / 3 oy / 12 oy.");

@@ -199,6 +199,7 @@ async function buildChild(doc) {
     UserSchedulerUsers,
     encryptSecret: encrypt,
     onCancel: templateControls?.cancelPending,
+    onUserUpdated: templateControls?.updateUser,
   });
   return child;
 }

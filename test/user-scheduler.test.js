@@ -398,6 +398,128 @@ test("admin can find TolovAPI transaction details by transaction ID", async () =
   assert.match(details, /order-1/);
 });
 
+test("User Bot admin can search a user, set their balance, and change Premium", async () => {
+  const replies = [];
+  const updates = [];
+  const runtimeUpdates = [];
+  const records = new Map([
+    ["123456:77", {
+      botId: 123456,
+      userId: 77,
+      balance: 1200,
+      premiumUntil: new Date("2026-01-01T00:00:00.000Z"),
+    }],
+    ["999:77", { botId: 999, userId: 77, balance: 8800 }],
+  ]);
+  const UserSchedulerUsers = {
+    async findOne(filter) {
+      const record = records.get(`${filter.botId}:${filter.userId}`);
+      return record ? structuredClone(record) : null;
+    },
+    async updateOne(filter, update) {
+      const key = `${filter.botId}:${filter.userId}`;
+      const user = records.get(key);
+      if (!user) return { matchedCount: 0 };
+      if (Object.prototype.hasOwnProperty.call(filter, "balance") && user.balance !== filter.balance) {
+        return { matchedCount: 0 };
+      }
+      if (update.$set) Object.assign(user, update.$set);
+      if (update.$push) {
+        for (const [field, value] of Object.entries(update.$push)) {
+          if (!Array.isArray(user[field])) user[field] = [];
+          user[field].push(value);
+        }
+      }
+      updates.push({ filter, update });
+      return { matchedCount: 1 };
+    },
+  };
+  const bot = new BotConstructor("test-token");
+  const { registerAdminPanel } = require("../bots/admin-panel");
+  registerAdminPanel(bot, {
+    doc: {
+      _id: 123456,
+      ownerId: 77,
+      username: "test_user_bot",
+      type: "user-scheduler",
+    },
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    Subs: { countDocuments: async () => 0 },
+    UserSchedulerUsers,
+    onUserUpdated: async (userId, user) => runtimeUpdates.push({ userId, user }),
+  });
+  bot.sendMessage = async (_chatId, text) => {
+    replies.push(text);
+    return { message_id: replies.length };
+  };
+  bot.answerCallbackQuery = async () => ({});
+  bot.api = async () => ({ message_id: 1 });
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "find-user",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 1 },
+      data: "admin:user:search",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 2,
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "77",
+    },
+  });
+  assert.match(replies.at(-1), /Telegram ID: 77/);
+  assert.match(replies.at(-1).replace(/\u00a0/g, " "), /Balans: 1 200 so'm/);
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "edit-balance",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 3 },
+      data: "admin:user:balance:77",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 4,
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "5000",
+    },
+  });
+  assert.equal(records.get("123456:77").balance, 5000);
+  assert.equal(records.get("123456:77").balanceAdminHistory[0].oldBalance, 1200);
+  assert.equal(records.get("999:77").balance, 8800);
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "grant-premium",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 5 },
+      data: "admin:user:premium:3:77",
+    },
+  });
+  const premiumUntil = records.get("123456:77").premiumUntil;
+  assert.ok(premiumUntil > new Date());
+  assert.equal(records.get("123456:77").premiumAdminHistory[0].months, 3);
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "disable-premium",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 6 },
+      data: "admin:user:premium:off:77",
+    },
+  });
+  assert.ok(records.get("123456:77").premiumUntil <= new Date());
+  assert.equal(records.get("123456:77").premium, false);
+  assert.equal(updates.length, 3);
+  assert.equal(runtimeUpdates.length, 3);
+});
+
 test("balance Premium purchase deducts atomically and preserves current expiry", async () => {
   const user = {
     botId: 123456,

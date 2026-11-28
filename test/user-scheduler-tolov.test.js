@@ -551,9 +551,11 @@ test("Premium tariff menu sends valid inline keyboard button objects", async () 
       },
     });
 
-    const keyboard = sent.find(({ method, payload }) =>
+    const premiumMessage = sent.find(({ method, payload }) =>
       method === "sendMessage" && payload.text.includes("PREMIUM TARIF"),
-    ).payload.reply_markup.inline_keyboard;
+    ).payload;
+    assert.match(premiumMessage.text, /Telegram ID: 77/);
+    const keyboard = premiumMessage.reply_markup.inline_keyboard;
     assert.ok(keyboard.every((row) =>
       Array.isArray(row) &&
       row.every((button) => button && typeof button === "object" && !Array.isArray(button)),
