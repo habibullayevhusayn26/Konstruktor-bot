@@ -177,22 +177,7 @@ test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
   assert.doesNotMatch(constructorBot, /PREMIUM TARIF/);
 });
 
-test("Premium UI has month options once and separate card payment", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const userScheduler = fs.readFileSync(
-    path.join(__dirname, "..", "bots", "user-scheduler.js"),
-    "utf8",
-  );
-  assert.match(userScheduler, /Karta orqali sotib olish/);
-  assert.doesNotMatch(userScheduler, /PREMIUM SOTIB OLISH/);
-  assert.match(userScheduler, /premium:card-duration/);
-  assert.match(userScheduler, /createUniqueCardTopup/);
-  assert.match(userScheduler, /pendingUniqueTopups/);
-  assert.match(userScheduler, /expiresAt/);
-});
-
-test("User Bot supports automatic card payment monitoring and admin controls", () => {
+test("User Bot Premium is available through Stars only", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const userScheduler = fs.readFileSync(
@@ -203,57 +188,14 @@ test("User Bot supports automatic card payment monitoring and admin controls", (
     path.join(__dirname, "..", "bots", "admin-panel.js"),
     "utf8",
   );
-  assert.match(userScheduler, /HumoCardBot/);
-  assert.match(userScheduler, /CardXabarBot/);
-  assert.match(userScheduler, /autoPaymentEnabled/);
-  assert.match(userScheduler, /handleCardPaymentNotification/);
-  assert.match(adminPanel, /Avtotolovni yoqish/);
-  assert.match(adminPanel, /Avtotolovni to'xtatish/);
-  assert.match(adminPanel, /Avtotolov botlarini sozlash/);
-});
-
-test("Premium admin can link admin Telegram account from admin panel", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const adminPanel = fs.readFileSync(
-    path.join(__dirname, "..", "bots", "admin-panel.js"),
-    "utf8",
-  );
-  assert.match(adminPanel, /Admin Telegram akkauntini ulash/);
-  assert.match(adminPanel, /admin:premium:auto-account/);
-});
-
-test("User Bot card Premium purchase uses automatic payment monitoring", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const userScheduler = fs.readFileSync(
-    path.join(__dirname, "..", "bots", "user-scheduler.js"),
-    "utf8",
-  );
-  assert.match(userScheduler, /premium:card:\(1\|3\|12\)/);
-  assert.match(userScheduler, /pendingCardPremium/);
-  assert.match(userScheduler, /HumoCardBot/);
-  assert.match(userScheduler, /CardXabarBot/);
-  assert.doesNotMatch(userScheduler, /premium_card:ok/);
-  assert.doesNotMatch(userScheduler, /premium_card:no/);
-  assert.match(userScheduler, /USERBOT_PREMIUM_CARD_NUMBER/);
-  assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
-  assert.match(userScheduler, /\$inc: \{ balance: amount \}/);
-  assert.match(userScheduler, /balanceHistory/);
-});
-
-test("User Bot admin can configure card and Stars Premium settings", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const adminPanel = fs.readFileSync(
-    path.join(__dirname, "..", "bots", "admin-panel.js"),
-    "utf8",
-  );
+  assert.match(userScheduler, /premium:buy:\(1\|3\|12\)/);
+  assert.match(userScheduler, /sendPremiumInvoice/);
+  assert.match(userScheduler, /currency: "XTR"/);
+  assert.match(userScheduler, /successful_payment/);
+  assert.doesNotMatch(userScheduler, /premium:card|pendingCardPremium|pendingUniqueTopups|autoPaymentEnabled|HumoCardBot|CardXabarBot/);
   assert.match(adminPanel, /Premium sozlamalari/);
   assert.match(adminPanel, /premium-stars/);
-  assert.match(adminPanel, /premium-card-number/);
-  assert.match(adminPanel, /premium-card-owner/);
-  assert.match(adminPanel, /premium-card-prices/);
+  assert.doesNotMatch(adminPanel, /premium-card|premium-auto|premium:auto-account|Avtotolov botlarini sozlash/);
 });
 
 test("media caption fallback includes footer in the original media message", () => {

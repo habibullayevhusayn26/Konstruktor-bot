@@ -197,12 +197,7 @@ async function buildChild(doc) {
     Bots,
     Subs,
     UserSchedulerUsers,
-    publicApiBaseUrl: PUBLIC_API_URL,
-    publicApiBaseUrl: PUBLIC_API_URL,
     onCancel: templateControls?.cancelPending,
-    onAutoPaymentStart: templateControls?.startPaymentMonitor,
-    onAutoPaymentStop: templateControls?.stopPaymentMonitor,
-    onAutoPaymentStatus: templateControls?.getPaymentMonitorStatus,
   });
   return child;
 }

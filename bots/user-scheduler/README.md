@@ -69,7 +69,5 @@ Intervalni `soat:daqiqa:soniya` formatida kiriting (masalan, `00:00:10`).
 Telegram tez-tez yuborishni cheklashi mumkin; 10 soniyalik oraliq qo'yilgan
 bo'lsa ham, Telegram tomonidan vaqtinchalik limit qo'llanishi ehtimoli bor.
 
-Premium karta orqali sotib olish uchun serverga
-`USERBOT_PREMIUM_CARD_NUMBER` va `USERBOT_PREMIUM_CARD_OWNER` environment
-qiymatlarini kiriting. Foydalanuvchi to'lov chekini yuborgach, so'rov bot egasi
-telegramiga yuboriladi va egasi tasdiqlash/rad etish tugmalaridan foydalanadi.
+Premium faqat Telegram Stars orqali sotib olinadi. Bot egasi User Bot admin
+panelidan 1, 3 va 12 oylik tariflar uchun Stars narxlarini o'zgartirishi mumkin.

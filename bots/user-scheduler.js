@@ -187,8 +187,6 @@ function registerUserSchedulerSession(bot, options) {
   let pendingAlbum = null;
   const mtprotoMessageRefs = new Map();
   let mtprotoSourceListenerAttached = false;
-  let paymentMonitorBuilder = null;
-  let paymentMonitorCallback = null;
   let loginAttempt = null;
   let schedulerTimer = null;
   let sending = false;
@@ -739,72 +737,6 @@ function registerUserSchedulerSession(bot, options) {
       .filter((ref) => Date.now() - ref.timestamp <= 10 * 60_000)
       .sort((left, right) => right.timestamp - left.timestamp);
     return sameTypeRefs[0]?.id || null;
-  }
-
-  function getPaymentBotNames() {
-    const settings = doc.premiumSettings?.payment || {};
-    const names = Array.isArray(settings.cardBots)
-      ? settings.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    return new Set(
-      names
-        .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-        .filter(Boolean),
-    );
-  }
-
-  function startPaymentMonitor() {
-    if (
-      !userClient ||
-      !doc.premiumSettings?.autoPaymentEnabled ||
-      paymentMonitorCallback ||
-      typeof userClient.addEventHandler !== "function"
-    ) return false;
-    paymentMonitorBuilder = new NewMessage({ incoming: true });
-    paymentMonitorCallback = async (event) => {
-      try {
-        const message = event?.message;
-        if (!message) return;
-        const text = typeof message.text === "string"
-          ? message.text
-          : typeof message.message === "string"
-            ? message.message
-            : "";
-        if (!text.trim()) return;
-        let senderUsername = "";
-        if (typeof message.getSender === "function") {
-          const sender = await message.getSender();
-          senderUsername = String(sender?.username || "").replace(/^@/, "").toLowerCase();
-        }
-        if (senderUsername && getPaymentBotNames().has(senderUsername)) {
-          await options.onPaymentNotification?.(text, senderUsername);
-        }
-      } catch (error) {
-        console.error(`User scheduler ${doc._id} karta to'lovi xabarini tahlil qila olmadi:`, error.message);
-      }
-    };
-    userClient.addEventHandler(paymentMonitorCallback, paymentMonitorBuilder);
-    return true;
-  }
-
-  function stopPaymentMonitor() {
-    if (
-      !userClient ||
-      !paymentMonitorBuilder ||
-      !paymentMonitorCallback ||
-      typeof userClient.removeEventHandler !== "function"
-    ) return false;
-    userClient.removeEventHandler(paymentMonitorCallback, paymentMonitorBuilder);
-    paymentMonitorBuilder = null;
-    paymentMonitorCallback = null;
-    return true;
-  }
-
-  function getPaymentMonitorStatus() {
-    return {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: Boolean(paymentMonitorCallback),
-    };
   }
 
   async function sendScheduledMessage(target, schedule) {
@@ -1376,7 +1308,6 @@ function registerUserSchedulerSession(bot, options) {
         }
       }
       await ensureRequiredSubscriptions();
-      if (doc.premiumSettings?.autoPaymentEnabled) startPaymentMonitor();
       attempt.phase = "success";
       attempt.message = "Akkaunt xavfsiz ulandi. Mini App’ni yopib, bot panelidan davom eting.";
       attempt.closed = true;
@@ -1555,410 +1486,6 @@ function registerUserSchedulerSession(bot, options) {
     return getLoginStatus();
   }
 
-  function parseCardPaymentAmount(text) {
-    const normalized = String(text || "")
-      .replace(/\u00a0/g, " ")
-      .replace(/[,.](?=\d{2}$)/g, "");
-    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|UZS|so'm|sum|сум|сумма)/gi)];
-    if (!matches.length) {
-      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-      if (!fallback) return null;
-      const value = Number(fallback[1].replace(/\D/g, ""));
-      return Number.isSafeInteger(value) ? value : null;
-    }
-    const value = Number(matches[0][1].replace(/\D/g, ""));
-    return Number.isSafeInteger(value) ? value : null;
-  }
-
-  async function handleCardPaymentNotification(text, senderUsername) {
-    const amount = parseCardPaymentAmount(text);
-    if (!amount) return false;
-    const settings = doc.premiumSettings || {};
-    const allowedBots = Array.isArray(settings.payment?.cardBots)
-      ? settings.payment.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    const allowed = allowedBots
-      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-      .includes(String(senderUsername || "").toLowerCase());
-    if (!allowed) return false;
-    const records = await UserSchedulerUsers.find({
-      botId: doc._id,
-      "pendingCardPremium.months": { $exists: true },
-    }).toArray();
-    const matched = records.find((record) => {
-      const pendingAmount = Number(
-        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-      );
-      return pendingAmount === amount;
-    });
-    if (!matched) return false;
-    const pending = matched.pendingCardPremium;
-    const now = new Date();
-    const currentUntil = matched.premiumUntil instanceof Date
-      ? matched.premiumUntil
-      : matched.premiumUntil
-        ? new Date(matched.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: matched.userId },
-      {
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: pending.plan,
-          lastAutoPaymentText: String(text).slice(0, 2000),
-        },
-        $push: {
-          premiumHistory: {
-            plan: pending.plan,
-            amount: pending.amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-          balanceHistory: {
-            amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-        },
-        $unset: { pendingCardPremium: "" },
-        $inc: { balance: amount },
-      },
-    );
-    await bot.sendMessage(
-      matched.userId,
-      `✅ Avtotolov tasdiqlandi!\nPremium muddat: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha\nReklama o'chirildi.`,
-    ).catch((error) => {
-      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-    });
-    return true;
-  }
-
-  function parseCardPaymentAmount(text) {
-    const normalized = String(text || "").replace(/\u00a0/g, " ");
-    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
-    if (!matches.length) {
-      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-      if (!fallback) return null;
-      const value = Number(fallback[1].replace(/\D/g, ""));
-      return Number.isSafeInteger(value) ? value : null;
-    }
-    const value = Number(matches[0][1].replace(/\D/g, ""));
-    return Number.isSafeInteger(value) ? value : null;
-  }
-
-  async function handleCardPaymentNotification(text, senderUsername) {
-    const amount = parseCardPaymentAmount(text);
-    if (!amount) return false;
-    const settings = doc.premiumSettings || {};
-    const allowedBots = Array.isArray(settings.payment?.cardBots)
-      ? settings.payment.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    if (!allowedBots
-      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-      .includes(String(senderUsername || "").toLowerCase())) return false;
-    const records = await UserSchedulerUsers.find({
-      botId: doc._id,
-      "pendingCardPremium.months": { $exists: true },
-    }).toArray();
-    const matched = records.find((record) => {
-      const pendingAmount = Number(
-        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-      );
-      return pendingAmount === amount;
-    });
-    if (!matched) return false;
-    const pending = matched.pendingCardPremium;
-    const now = new Date();
-    const currentUntil = matched.premiumUntil instanceof Date
-      ? matched.premiumUntil
-      : matched.premiumUntil
-        ? new Date(matched.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: matched.userId },
-      {
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: pending.plan,
-          lastAutoPaymentText: String(text).slice(0, 2000),
-        },
-        $push: {
-          premiumHistory: {
-            plan: pending.plan,
-            amount: pending.amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-          balanceHistory: {
-            amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-        },
-        $unset: { pendingCardPremium: "" },
-        $inc: { balance: amount },
-      },
-    );
-    await bot.sendMessage(
-      matched.userId,
-      `✅ Avtotolov tasdiqlandi!\nBalansga qo‘shildi: ${amount.toLocaleString("uz-UZ")} so'm\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
-    ).catch((error) => {
-      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-    });
-    return true;
-  }
-
-  function parseOuterCardPaymentAmount(text) {
-    const normalized = String(text || "").replace(/\u00a0/g, " ");
-    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
-    if (!matches.length) {
-      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-      if (!fallback) return null;
-      const value = Number(fallback[1].replace(/\D/g, ""));
-      return Number.isSafeInteger(value) ? value : null;
-    }
-    const value = Number(matches[0][1].replace(/\D/g, ""));
-    return Number.isSafeInteger(value) ? value : null;
-  }
-
-  async function handleOuterCardPayment(text, senderUsername) {
-    const amount = parseOuterCardPaymentAmount(text);
-    if (!amount) return false;
-    const settings = doc.premiumSettings || {};
-    const allowedBots = Array.isArray(settings.payment?.cardBots)
-      ? settings.payment.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    if (!allowedBots
-      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-      .includes(String(senderUsername || "").toLowerCase())) return false;
-    const records = await UserSchedulerUsers.find({
-      botId: doc._id,
-      "pendingCardPremium.months": { $exists: true },
-    }).toArray();
-    const matched = records.find((record) => {
-      const pendingAmount = Number(
-        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-      );
-      return pendingAmount === amount;
-    });
-    if (!matched) return false;
-    const pending = matched.pendingCardPremium;
-    const now = new Date();
-    const currentUntil = matched.premiumUntil instanceof Date
-      ? matched.premiumUntil
-      : matched.premiumUntil
-        ? new Date(matched.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: matched.userId },
-      {
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: pending.plan,
-          lastAutoPaymentText: String(text).slice(0, 2000),
-        },
-        $push: {
-          premiumHistory: {
-            plan: pending.plan,
-            amount: pending.amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-          balanceHistory: {
-            amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-        },
-        $unset: { pendingCardPremium: "" },
-        $inc: { balance: amount },
-      },
-    );
-    await bot.sendMessage(
-      matched.userId,
-      `✅ Avtotolov tasdiqlandi!\nBalansga qo‘shildi: ${amount.toLocaleString("uz-UZ")} so'm\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
-    ).catch((error) => {
-      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-    });
-    return true;
-  }
-
-  function parseOuterPaymentAmount(text) {
-    const normalized = String(text || "").replace(/\u00a0/g, " ");
-    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
-    if (!matches.length) {
-      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-      if (!fallback) return null;
-      return Number(fallback[1].replace(/\D/g, ""));
-    }
-    return Number(matches[0][1].replace(/\D/g, ""));
-  }
-
-  async function handleOuterCardPayment(text, senderUsername) {
-    const amount = parseOuterPaymentAmount(text);
-    if (!amount) return false;
-    const settings = doc.premiumSettings || {};
-    const allowedBots = Array.isArray(settings.payment?.cardBots)
-      ? settings.payment.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    if (!allowedBots
-      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-      .includes(String(senderUsername || "").toLowerCase())) return false;
-    const records = await UserSchedulerUsers.find({
-      botId: doc._id,
-      "pendingCardPremium.months": { $exists: true },
-    }).toArray();
-    const matched = records.find((record) => {
-      const pendingAmount = Number(
-        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-      );
-      return pendingAmount === amount;
-    });
-    if (!matched) return false;
-    const pending = matched.pendingCardPremium;
-    const now = new Date();
-    const currentUntil = matched.premiumUntil instanceof Date
-      ? matched.premiumUntil
-      : matched.premiumUntil
-        ? new Date(matched.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: matched.userId },
-      {
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: pending.plan,
-          lastAutoPaymentText: String(text).slice(0, 2000),
-        },
-        $push: {
-          premiumHistory: {
-            plan: pending.plan,
-            amount: pending.amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-          balanceHistory: {
-            amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-        },
-        $unset: { pendingCardPremium: "" },
-        $inc: { balance: amount },
-      },
-    );
-    await bot.sendMessage(
-      matched.userId,
-      `✅ Avtotolov tasdiqlandi!\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
-    ).catch((error) => {
-      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-    });
-    return true;
-  }
-
-  function parseOuterPaymentAmount(text) {
-    const normalized = String(text || "").replace(/\u00a0/g, " ");
-    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
-    if (!matches.length) {
-      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-      if (!fallback) return null;
-      return Number(fallback[1].replace(/\D/g, ""));
-    }
-    return Number(matches[0][1].replace(/\D/g, ""));
-  }
-
-  async function handleOuterCardPayment(text, senderUsername) {
-    const amount = parseOuterPaymentAmount(text);
-    if (!amount) return false;
-    const settings = doc.premiumSettings || {};
-    const allowedBots = Array.isArray(settings.payment?.cardBots)
-      ? settings.payment.cardBots
-      : ["HumoCardBot", "CardXabarBot"];
-    if (!allowedBots
-      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-      .includes(String(senderUsername || "").toLowerCase())) return false;
-    const records = await UserSchedulerUsers.find({
-      botId: doc._id,
-      "pendingCardPremium.months": { $exists: true },
-    }).toArray();
-    const matched = records.find((record) => {
-      const pendingAmount = Number(
-        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-      );
-      return pendingAmount === amount;
-    });
-    if (!matched) return false;
-    const pending = matched.pendingCardPremium;
-    const now = new Date();
-    const currentUntil = matched.premiumUntil instanceof Date
-      ? matched.premiumUntil
-      : matched.premiumUntil
-        ? new Date(matched.premiumUntil)
-        : null;
-    const start = currentUntil && currentUntil > now ? currentUntil : now;
-    const premiumUntil = new Date(start);
-    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: matched.userId },
-      {
-        $set: {
-          premium: true,
-          premiumUntil,
-          premiumPlan: pending.plan,
-          lastAutoPaymentText: String(text).slice(0, 2000),
-        },
-        $push: {
-          premiumHistory: {
-            plan: pending.plan,
-            amount: pending.amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-          balanceHistory: {
-            amount,
-            paidAt: now,
-            method: "card-auto",
-            sender: senderUsername,
-          },
-        },
-        $unset: { pendingCardPremium: "" },
-        $inc: { balance: amount },
-      },
-    );
-    await bot.sendMessage(
-      matched.userId,
-      `✅ Avtotolov tasdiqlandi!\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
-    ).catch((error) => {
-      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-    });
-    return true;
-  }
-
   async function handleApiRequest(action, body) {
     const webAppUser = validateWebAppInitData(body.initData, bot.token);
     if (String(webAppUser.id) !== String(ownerId)) {
@@ -2026,7 +1553,6 @@ function registerUserSchedulerSession(bot, options) {
         }
       }
       await ensureRequiredSubscriptions();
-      if (doc.premiumSettings?.autoPaymentEnabled) startPaymentMonitor();
       if (getSchedule().enabled) startScheduler();
     } catch (error) {
       console.error(`User scheduler ${doc._id} sessiyasini tiklab bo'lmadi:`, error.name);
@@ -2044,7 +1570,6 @@ function registerUserSchedulerSession(bot, options) {
   async function stopRuntime() {
     stopping = true;
     stopScheduler();
-    stopPaymentMonitor();
     await waitForSend();
     if (pendingAlbum) await flushPendingAlbum(false);
     await cancelMiniAppLogin();
@@ -2063,7 +1588,6 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   async function unlinkAccount() {
-    stopPaymentMonitor();
     stopScheduler();
     await saveSchedule({ enabled: false, nextRunAt: null, chatIds: [] });
     await waitForSend();
@@ -2522,9 +2046,6 @@ function registerUserSchedulerSession(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
-    startPaymentMonitor,
-    stopPaymentMonitor,
-    getPaymentMonitorStatus,
     async stop() {
       await stopRuntime();
     },
@@ -2640,79 +2161,6 @@ function registerUserScheduler(bot, options) {
       ...options,
       doc: sessionDoc,
       Bots: sessionCollection,
-      onPaymentNotification: async (text, senderUsername) => {
-        const normalized = String(text || "").replace(/\u00a0/g, " ");
-        const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
-        let amount = null;
-        if (matches.length) amount = Number(matches[0][1].replace(/\D/g, ""));
-        if (!amount) {
-          const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
-          if (fallback) amount = Number(fallback[1].replace(/\D/g, ""));
-        }
-        if (!amount) return false;
-        const settings = doc.premiumSettings || {};
-        const allowedBots = Array.isArray(settings.payment?.cardBots)
-          ? settings.payment.cardBots
-          : ["HumoCardBot", "CardXabarBot"];
-        if (!allowedBots
-          .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
-          .includes(String(senderUsername || "").toLowerCase())) return false;
-        const records = await UserSchedulerUsers.find({
-          botId: doc._id,
-          "pendingCardPremium.months": { $exists: true },
-        }).toArray();
-        const matched = records.find((record) => {
-          const pendingAmount = Number(
-            String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
-          );
-          return pendingAmount === amount;
-        });
-        if (!matched) return false;
-        const pending = matched.pendingCardPremium;
-        const now = new Date();
-        const currentUntil = matched.premiumUntil instanceof Date
-          ? matched.premiumUntil
-          : matched.premiumUntil
-            ? new Date(matched.premiumUntil)
-            : null;
-        const start = currentUntil && currentUntil > now ? currentUntil : now;
-        const premiumUntil = new Date(start);
-        premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
-        await UserSchedulerUsers.updateOne(
-          { botId: doc._id, userId: matched.userId },
-          {
-            $set: {
-              premium: true,
-              premiumUntil,
-              premiumPlan: pending.plan,
-              lastAutoPaymentText: String(text).slice(0, 2000),
-            },
-            $push: {
-              premiumHistory: {
-                plan: pending.plan,
-                amount: pending.amount,
-                paidAt: now,
-                method: "card-auto",
-                sender: senderUsername,
-              },
-              balanceHistory: {
-                amount,
-                paidAt: now,
-                method: "card-auto",
-                sender: senderUsername,
-              },
-            },
-            $unset: { pendingCardPremium: "" },
-          },
-        );
-        await bot.sendMessage(
-          matched.userId,
-          `✅ Avtotolov tasdiqlandi!\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
-        ).catch((error) => {
-          console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
-        });
-        return true;
-      },
     });
     const entry = { bot: userBot, controls };
     try {
@@ -2762,26 +2210,12 @@ function registerUserScheduler(bot, options) {
     const stars = settings.stars && typeof settings.stars === "object"
       ? settings.stars
       : {};
-    const card = settings.card && typeof settings.card === "object"
-      ? settings.card
-      : {};
     return {
       stars: {
         1: Number(stars[1]) || 100,
         3: Number(stars[3]) || 250,
         12: Number(stars[12]) || 800,
       },
-      card: {
-        1: Number(card[1]) || 50000,
-        3: Number(card[3]) || 120000,
-        12: Number(card[12]) || 400000,
-      },
-      cardNumber: typeof settings.cardNumber === "string"
-        ? settings.cardNumber
-        : process.env.USERBOT_PREMIUM_CARD_NUMBER || "",
-      cardOwner: typeof settings.cardOwner === "string"
-        ? settings.cardOwner
-        : process.env.USERBOT_PREMIUM_CARD_OWNER || "",
     };
   }
 
@@ -2796,52 +2230,6 @@ function registerUserScheduler(bot, options) {
       active: Boolean(premiumUntil && premiumUntil > new Date()),
       premiumUntil,
     };
-  }
-
-  async function createUniqueCardTopup(userId, months) {
-    const premiumSettings = getPremiumSettings();
-    const baseAmount = Number(premiumSettings.card[months]) || 50000;
-    const now = Date.now();
-    let uniqueAmount = baseAmount;
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const records = await UserSchedulerUsers.find({
-        botId: doc._id,
-        "pendingUniqueTopups.uniqueAmount": uniqueAmount,
-        "pendingUniqueTopups.expiresAt": { $gt: new Date(now) },
-      }).limit(1).toArray();
-      if (!records.length) break;
-      uniqueAmount = baseAmount + Math.floor(Math.random() * 700) + 100;
-    }
-    const expiresAt = new Date(now + 5 * 60_000);
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId },
-      {
-        $set: {
-          pendingUniqueTopups: [
-            ...(await getPendingUniqueTopups(userId)).filter((topup) =>
-              new Date(topup.expiresAt).getTime() > now &&
-              topup.uniqueAmount !== uniqueAmount
-            ),
-            {
-              months,
-              baseAmount,
-              uniqueAmount,
-              expiresAt,
-              createdAt: new Date(now),
-            },
-          ],
-        },
-      },
-      { upsert: true },
-    );
-    return { uniqueAmount, expiresAt };
-  }
-
-  async function getPendingUniqueTopups(userId) {
-    const record = await UserSchedulerUsers.findOne({ botId: doc._id, userId });
-    return Array.isArray(record?.pendingUniqueTopups)
-      ? record.pendingUniqueTopups
-      : [];
   }
 
   async function showPremium(ctx) {
@@ -2871,9 +2259,6 @@ function registerUserScheduler(bot, options) {
               { text: `1 oy — ⭐ ${premiumSettings.stars[1]}`, callback_data: "premium:buy:1", style: "primary" },
               { text: `3 oy — ⭐ ${premiumSettings.stars[3]}`, callback_data: "premium:buy:3", style: "primary" },
               { text: `12 oy — ⭐ ${premiumSettings.stars[12]}`, callback_data: "premium:buy:12", style: "primary" },
-            ],
-            [
-              { text: "💳 Karta orqali sotib olish", callback_data: "premium:card-duration", style: "success" },
             ],
             [
               { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
@@ -2908,7 +2293,7 @@ function registerUserScheduler(bot, options) {
 
   bot.command("start", dispatchUpdate);
   bot.onCallbackData(/^userbot:(.+)$/, dispatchUpdate);
-  bot.onCallbackData(/^premium:(show|mine|history|duration|card-duration)$/, async (ctx, match) => {
+  bot.onCallbackData(/^premium:(show|mine|history|duration)$/, async (ctx, match) => {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     const action = match[1];
@@ -2937,21 +2322,6 @@ function registerUserScheduler(bot, options) {
       await ctx.reply(`📨 Premium to'lov tarixi\n\n${lines}`);
       return;
     }
-    if (action === "card-duration") {
-      const premiumSettings = getPremiumSettings();
-      await ctx.reply("💳 Karta bilan qaysi muddat Premium sotib olinadi?", {
-        reply_markup: {
-          inline_keyboard: [
-            ...[1, 3, 12].map((months) => [{
-              text: `${PREMIUM_PLANS[months].label} — ${Number(premiumSettings.card[months]).toLocaleString("uz-UZ")} so'm`,
-              callback_data: `premium:card:${months}`,
-              style: "primary",
-            }]),
-          ],
-        },
-      });
-      return;
-    }
     if (action === "duration") {
       const premiumSettings = getPremiumSettings();
       await ctx.reply("📅 Premium muddatini tanlang:", {
@@ -2971,46 +2341,6 @@ function registerUserScheduler(bot, options) {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     await sendPremiumInvoice(ctx, Number(match[1]));
-  });
-
-  bot.onCallbackData(/^premium:card:(1|3|12)$/, async (ctx, match) => {
-    await ctx.answer();
-    if (ctx.chat?.type !== "private") return;
-    const months = Number(match[1]);
-    const plan = PREMIUM_PLANS[months];
-    const premiumSettings = getPremiumSettings();
-    const cardNumber = premiumSettings.cardNumber;
-    const cardOwner = premiumSettings.cardOwner;
-    const cardPrices = premiumSettings.card;
-    if (!cardNumber) {
-      await ctx.reply("💳 Karta orqali to'lov hozircha sozlanmagan.");
-      return;
-    }
-    const unique = await createUniqueCardTopup(ctx.from.id, months);
-    await UserSchedulerUsers.updateOne(
-      { botId: doc._id, userId: ctx.from.id },
-      {
-        $set: {
-          pendingCardPremium: {
-            months,
-            plan: plan.label,
-            amount: unique.uniqueAmount,
-            baseAmount: cardPrices[months],
-            requestedAt: new Date(),
-          },
-        },
-      },
-      { upsert: true },
-    );
-    await ctx.reply(
-      `💳 ${plan.label} Premium uchun karta orqali to'lov\n\n` +
-        `Karta: <code>${cardNumber}</code>\n` +
-        `Karta egasi: ${cardOwner || "Sozlanmagan"}\n` +
-        `To'lov summasi: <b>${Number(unique.uniqueAmount).toLocaleString("uz-UZ")} so'm</b>\n` +
-        `Bu summa faqat sizga tegishli va ${Math.ceil((unique.expiresAt - Date.now()) / 60_000)} daqiqa amal qiladi.\n\n` +
-        "Faqat shu exact summani kartaga yuboring. Avtotolov to‘lovni aniqlagach Premium avtomatik faollashadi.",
-      { parse_mode: "HTML" },
-    );
   });
 
   bot.onUpdate("pre_checkout_query", async (ctx) => {
@@ -3082,24 +2412,6 @@ function registerUserScheduler(bot, options) {
     }
   }
 
-  async function startOuterPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopOuterPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getOuterPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
-  }
-
   async function handleApiRequest(action, body) {
     const webAppUser = validateWebAppInitData(body.initData, bot.token);
     const runtime = await getUserRuntime(webAppUser.id);
@@ -3167,9 +2479,6 @@ function registerUserScheduler(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
-    startPaymentMonitor: startOuterPaymentMonitor,
-    stopPaymentMonitor: stopOuterPaymentMonitor,
-    getPaymentMonitorStatus: getOuterPaymentMonitorStatus,
   };
 }
 
