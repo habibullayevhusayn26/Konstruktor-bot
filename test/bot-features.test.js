@@ -2043,6 +2043,50 @@ test("bot admin panel rejects non-owners and lets owner set channel", async () =
   assert.ok(edits.length > 0);
 });
 
+test("User Bot stats include linked account count", async () => {
+  const bot = new BotConstructor("test-token");
+  const edits = [];
+  bot.sendMessage = async () => ({});
+  bot.editMessageText = async (_chatId, _messageId, text) => edits.push(text);
+  bot.answerCallbackQuery = async () => ({});
+  registerAdminPanel(bot, {
+    doc: {
+      _id: 789,
+      ownerId: 55,
+      username: "user_bot",
+      type: "user-scheduler",
+    },
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    Subs: {
+      countDocuments: async (filter) =>
+        filter.createdAt ? 2 : 12,
+    },
+    UserSchedulerUsers: {
+      countDocuments: async (filter) => {
+        assert.equal(filter.botId, 789);
+        assert.deepEqual(filter.userSessionEncrypted, { $exists: true, $ne: "" });
+        return 7;
+      },
+    },
+  });
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "stats",
+      data: "admin:stats",
+      from: { id: 55 },
+      message: {
+        chat: { id: 55, type: "private" },
+        message_id: 1,
+      },
+    },
+  });
+
+  assert.match(edits.at(-1), /Jami foydalanuvchi: 12/);
+  assert.match(edits.at(-1), /Bugun qo'shilgan: 2/);
+  assert.match(edits.at(-1), /Akkaunti ulangan: 7/);
+});
+
 test("non-owner users can cancel their own User Bot input", async () => {
   const bot = new BotConstructor("test-token");
   const cancelledUsers = [];

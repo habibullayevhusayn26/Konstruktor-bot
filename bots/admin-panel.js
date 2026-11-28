@@ -192,7 +192,7 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
   });
 }
 
-function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
+function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel }) {
   let pendingAction = null;
   let broadcastDraft = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
@@ -446,15 +446,23 @@ function registerAdminPanel(bot, { doc, Bots, Subs, onCancel }) {
 
     switch (ctx.text) {
       case "admin:stats": {
-        const [total, today] = await Promise.all([
+        const [total, today, linkedAccounts] = await Promise.all([
           Subs.countDocuments({ botId: doc._id }),
           Subs.countDocuments({
             botId: doc._id,
             createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
           }),
+          doc.type === "user-scheduler" && UserSchedulerUsers
+            ? UserSchedulerUsers.countDocuments({
+                botId: doc._id,
+                userSessionEncrypted: { $exists: true, $ne: "" },
+              })
+            : Promise.resolve(0),
         ]);
         await ctx.edit(
-          `📊 @${doc.username}\nJami foydalanuvchi: ${total}\nBugun qo'shilgan: ${today}`,
+          doc.type === "user-scheduler"
+            ? `📊 @${doc.username}\nJami foydalanuvchi: ${total}\nBugun qo'shilgan: ${today}\n🔗 Akkaunti ulangan: ${linkedAccounts}`
+            : `📊 @${doc.username}\nJami foydalanuvchi: ${total}\nBugun qo'shilgan: ${today}`,
           panelMarkup(doc),
         );
         break;

@@ -193,6 +193,7 @@ async function buildChild(doc) {
     doc,
     Bots,
     Subs,
+    UserSchedulerUsers,
     onCancel: templateControls?.cancelPending,
   });
   return child;
