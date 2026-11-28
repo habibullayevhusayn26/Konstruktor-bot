@@ -192,6 +192,70 @@ test("User Bot card Premium purchase stores receipt and admin approval flow", ()
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
 });
 
+test("preview shows the exact text before activation without sending to target chats", async () => {
+  const bot = new BotConstructor("test-token");
+  const replies = [];
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    userSessionEncrypted: "encrypted-session",
+    userAccount: { id: "77", username: "owner" },
+    userSchedule: {
+      message: "Preview matni",
+      intervalSeconds: 600,
+      chatIds: ["-100777"],
+      enabled: false,
+      nextRunAt: null,
+    },
+  };
+  const client = {
+    connect: async () => {},
+    checkAuthorization: async () => true,
+    getMe: async () => ({ id: 77, username: "owner" }),
+    getDialogs: async () => [{
+      isChannel: true,
+      title: "Preview channel",
+      entity: { className: "Channel", title: "Preview channel", broadcast: true },
+    }],
+    getEntity: async () => ({ className: "Channel", title: "Preview channel", broadcast: true }),
+    getPeerId: async () => "-100777",
+    disconnect: async () => {},
+  };
+  const oldApiId = process.env.TELEGRAM_API_ID;
+  const oldApiHash = process.env.TELEGRAM_API_HASH;
+  process.env.TELEGRAM_API_ID = "12345";
+  process.env.TELEGRAM_API_HASH = "test-api-hash";
+  const { runtime } = registerTestScheduler(bot, {
+    doc,
+    replies,
+    encryptSecret: (value) => value,
+    decryptSecret: (value) => value,
+    createTelegramClient: () => client,
+  });
+
+  try {
+    await runtime.start();
+    await bot.processUpdate({
+      callback_query: {
+        id: "preview",
+        from: { id: 77 },
+        message: { chat: { id: 77, type: "private" }, message_id: 1 },
+        data: "userbot:preview",
+      },
+    });
+    assert.ok(replies.some((reply) => reply.text === "👀 XABAR KO'RINISHI:"));
+    assert.ok(replies.some((reply) => reply.text.includes("Preview matni")));
+    assert.match(replies.at(-1).text, /Tasdiqlasangiz/);
+  } finally {
+    await runtime.stop();
+    if (oldApiId === undefined) delete process.env.TELEGRAM_API_ID;
+    else process.env.TELEGRAM_API_ID = oldApiId;
+    if (oldApiHash === undefined) delete process.env.TELEGRAM_API_HASH;
+    else process.env.TELEGRAM_API_HASH = oldApiHash;
+  }
+});
+
 test("Mini App URL requires HTTPS and preserves the configured path prefix", () => {
   assert.equal(
     buildMiniAppUrl("https://maker.example/base/", 123456),

@@ -1720,15 +1720,8 @@ function registerUserSchedulerSession(bot, options) {
           await ctx.reply(validation.error, { reply_markup: panelKeyboard() });
           return;
         }
-        if (isValidMessageRef(schedule.messageRef)) {
-          await ctx.reply(
-            `XABAR TANLANDI: ${schedule.messageRef.description || "Telegram xabari"}` +
-              (schedule.messageRef.forwarded ? " (forward holida yuboriladi)." : " (siz yuborgandek nusxalanadi)."),
-          );
-        } else {
-          await ctx.reply("XABAR MATNI OLDIDAN KO'RISH:");
-          await ctx.reply(schedule.message);
-        }
+        await ctx.reply("👀 XABAR KO'RINISHI:");
+        await previewScheduledMessage(ctx, schedule);
         await ctx.reply(
           `Manzillar: ${validation.targets.length}\n` +
             `Interval: ${formatInterval(schedule.intervalSeconds)}\n` +
@@ -1780,6 +1773,54 @@ function registerUserSchedulerSession(bot, options) {
       await ctx.reply(`Amal bajarilmadi: ${error.message}`, { reply_markup: panelKeyboard() });
     }
   });
+
+  async function previewScheduledMessage(ctx, schedule) {
+    if (!isValidMessageRef(schedule.messageRef)) {
+      if (typeof schedule.message === "string" && schedule.message.trim()) {
+        await ctx.reply(buildTextSendParams(schedule.message, {}).message);
+      }
+      return;
+    }
+
+    for (const messageId of schedule.messageRef.messageIds) {
+      try {
+        const preview = await ctx.api("copyMessage", {
+          chat_id: ownerId,
+          from_chat_id: ownerId,
+          message_id: messageId,
+          disable_notification: true,
+        });
+        const previewMessageId = preview?.message_id;
+        if (!previewMessageId) continue;
+
+        if (!doc.premium) {
+          const baseText = schedule.messageRef.description === "matn"
+            ? schedule.messageRef.text || preview.text || ""
+            : schedule.messageRef.text || preview.caption || "";
+          if (baseText) {
+            const withFooter = buildTextSendParams(baseText, schedule.messageRef);
+            if (schedule.messageRef.description === "matn") {
+              await ctx.api("editMessageText", {
+                chat_id: ownerId,
+                message_id: previewMessageId,
+                text: withFooter.message,
+                entities: withFooter.formattingEntities,
+              });
+            } else {
+              await ctx.api("editMessageCaption", {
+                chat_id: ownerId,
+                message_id: previewMessageId,
+                caption: withFooter.message,
+                caption_entities: withFooter.formattingEntities,
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`User scheduler ${doc._id} preview xabarini ko'rsata olmadi:`, error.message);
+      }
+    }
+  }
 
   async function validateSchedule() {
     const schedule = getSchedule();
