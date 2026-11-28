@@ -235,6 +235,8 @@ test("User Bot card Premium purchase uses automatic payment monitoring", () => {
   assert.doesNotMatch(userScheduler, /premium_card:no/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_NUMBER/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
+  assert.match(userScheduler, /\$inc: \{ balance: amount \}/);
+  assert.match(userScheduler, /balanceHistory/);
 });
 
 test("User Bot admin can configure card and Stars Premium settings", () => {
