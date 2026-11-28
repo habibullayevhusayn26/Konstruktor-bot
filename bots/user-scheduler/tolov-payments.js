@@ -141,11 +141,8 @@ function createTolovPaymentService({
     const createdAt = Number.isFinite(createdAtValue)
       ? new Date(createdAtValue)
       : new Date(now());
-    const maxExpiry = createdAt.getTime() + PAYMENT_TTL_MS;
     const providerExpiry = new Date(payment.expiresAt).getTime();
-    const expiresAt = new Date(
-      Number.isFinite(providerExpiry) ? Math.min(providerExpiry, maxExpiry) : maxExpiry,
-    );
+    const expiresAt = new Date(createdAt.getTime() + PAYMENT_TTL_MS);
     const tracked = {
       ...payment,
       transactionId: payment.transactionId || createTransactionId(),
@@ -371,8 +368,7 @@ function createTolovPaymentService({
     });
   }
 
-  async function createProviderPayment(userId, request) {
-    const createdAt = new Date(now());
+  async function createProviderPayment(userId, request, createdAt) {
     const result = await api.createPayment(request.orderId, request.amount);
     if (result?.error_code === "amount_busy") {
       let suggestedAmount = positiveAmount(result.suggested_amount);
@@ -409,13 +405,11 @@ function createTolovPaymentService({
     const paymentId = result.payment_id == null ? "" : String(result.payment_id);
     const amount = positiveAmount(result.amount);
     const cardNumber = typeof result.card_number === "string" ? result.card_number.trim() : "";
-    const providerExpiresAt = new Date(result.expires_at);
     if (
       !paymentId ||
       !amount ||
       amount !== request.amount ||
-      !cardNumber ||
-      !Number.isFinite(providerExpiresAt.getTime())
+      !cardNumber
     ) {
       if (paymentId) {
         await api.cancelPayment(paymentId).catch((error) => {
@@ -425,10 +419,7 @@ function createTolovPaymentService({
       throw new Error("TolovAPI to'lov ma'lumotlari yoki summa mos emas.");
     }
 
-    const expiresAt = new Date(Math.min(
-      providerExpiresAt.getTime(),
-      createdAt.getTime() + PAYMENT_TTL_MS,
-    ));
+    const expiresAt = new Date(createdAt.getTime() + PAYMENT_TTL_MS);
     if (expiresAt.getTime() <= now()) {
       await api.cancelPayment(paymentId).catch((error) => {
         console.error(`User scheduler ${botId} muddati o'tgan TolovAPI to'lovini bekor qila olmadi:`, error.message);
@@ -495,6 +486,7 @@ function createTolovPaymentService({
       throw new Error("Premium muddati noto'g'ri.");
     }
 
+    const paymentStartedAt = new Date(now());
     return withUserLock(userId, () => withCreationLock(async () => {
       const user = await ensureUserRecord(userId);
       if (user.pendingTolovPayment?.paymentId) {
@@ -526,12 +518,13 @@ function createTolovPaymentService({
         requestedAmount,
         ...(purpose === "premium" ? { months: Number(months) } : {}),
       };
-      return createProviderPayment(userId, request);
+      return createProviderPayment(userId, request, paymentStartedAt);
     }));
   }
 
   async function confirm(userId) {
     if (!api.isConfigured()) throw new Error("TolovAPI sozlanmagan.");
+    const paymentStartedAt = new Date(now());
     return withUserLock(userId, () => withCreationLock(async () => {
       const user = await UserSchedulerUsers.findOne({ botId, userId });
       const request = user?.pendingTolovRequest;
@@ -547,7 +540,7 @@ function createTolovPaymentService({
         );
         throw new Error("TolovAPI taklif qilgan summa eskirgan. To'lovni qaytadan boshlang.");
       }
-      return createProviderPayment(userId, request);
+      return createProviderPayment(userId, request, paymentStartedAt);
     }));
   }
 

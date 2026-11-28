@@ -80,11 +80,13 @@ sozlamalaridan o'rnatadi: Shop ID va Shop Key alohida kiritiladi. Shop Key
 va kiritilgan xabar o'chiriladi. `TOKEN_SECRET` qiymatini o'zgartirish
 shifrlangan kalitlarni ochib bo'lmasligiga olib keladi; kalitni almashtirish
 uchun paneldan Shop Key'ni qayta kiriting. TolovAPI to'lov holati har 3 soniyada
-tekshiriladi; har bir to'lov ko'pi bilan 5 daqiqa amal qiladi va public webhook
-talab qilinmaydi. Balans to'ldirishda foydalanuvchi kiritgan summaga kamida 1
-so'm qo'shiladi; faol to'lovlar bilan takrorlanmasligi uchun keyingi to'lovlarda
-summa oshirib boriladi. Bot foydalanuvchiga yuborilishi kerak bo'lgan aniq
-summani ko'rsatadi. Har bir yaratilgan to'lov uchun Tranzaksiya ID beriladi;
+tekshiriladi; har bir to'lov ko'pi bilan 5 daqiqa amal qiladi. Balans to'ldirish
+uchun bu muddat summa yuborilgan zahoti boshlanadi; TolovAPI qaytargan amal
+qilish vaqti muddatni qisqartirmaydi. Public webhook talab qilinmaydi. Balans
+to'ldirishda foydalanuvchi kiritgan summaga kamida 1 so'm qo'shiladi; faol
+to'lovlar bilan takrorlanmasligi uchun keyingi to'lovlarda summa oshirib
+boriladi. Bot foydalanuvchiga yuborilishi kerak bo'lgan aniq summani ko'rsatadi.
+Har bir yaratilgan to'lov uchun Tranzaksiya ID beriladi;
 bot egasi `/admin` → Premium bo'limidan ID bo'yicha qidirib, to'lov holati va
 tafsilotlarini ko'rishi mumkin. Summa band bo'lsa, TolovAPI taklif qilgan
 summani foydalanuvchi tasdiqlagandan keyingina yangi to'lov yaratiladi.

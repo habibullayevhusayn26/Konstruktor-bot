@@ -327,6 +327,47 @@ test("concurrent top-ups receive distinct amounts and expire within five minutes
   }
 });
 
+test("the five-minute window starts with the submitted amount, not TolovAPI's expiry timestamp", async () => {
+  const store = createPaymentStore();
+  const enteredAt = Date.now();
+  let currentTime = enteredAt;
+  const api = {
+    isConfigured: () => true,
+    async createPayment(orderId, amount) {
+      currentTime += 60_000;
+      return {
+        ok: true,
+        payment_id: "payment-stale-expiry",
+        amount,
+        card_number: "8600 0000 0000 0000",
+        expires_at: new Date(enteredAt - 1).toISOString(),
+      };
+    },
+    async paymentStatus() {
+      return { ok: true, status: "pending" };
+    },
+    async cancelPayment() {
+      return { ok: true, status: "cancel" };
+    },
+  };
+  const service = createTolovPaymentService({
+    botId: 88,
+    UserSchedulerUsers: store.collection,
+    api,
+    notifyUser: async () => {},
+    now: () => currentTime,
+  });
+
+  try {
+    const created = await service.create(77, { purpose: "balance", amount: 1500 });
+    assert.equal(created.payment.createdAt.getTime(), enteredAt);
+    assert.equal(created.payment.expiresAt.getTime(), enteredAt + 5 * 60_000);
+    assert.equal((await service.check(77)).status, "pending");
+  } finally {
+    service.stop();
+  }
+});
+
 test("expired pending TolovAPI payment is cancelled without credit", async () => {
   const store = createPaymentStore();
   const now = Date.now();
@@ -359,7 +400,7 @@ test("expired pending TolovAPI payment is cancelled without credit", async () =>
 
   try {
     await service.create(77, { purpose: "balance", amount: 10000 });
-    currentTime = now + 60_001;
+    currentTime = now + 5 * 60_000 + 1;
     assert.equal((await service.check(77)).status, "expired");
     const user = await store.collection.findOne({ botId: 88, userId: 77 });
     assert.equal(user.balance, 0);
