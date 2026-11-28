@@ -1628,6 +1628,190 @@ function registerUserSchedulerSession(bot, options) {
     };
   }
 
+  function parseCardPaymentAmount(text) {
+    const normalized = String(text || "").replace(/\u00a0/g, " ");
+    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
+    if (!matches.length) {
+      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
+      if (!fallback) return null;
+      const value = Number(fallback[1].replace(/\D/g, ""));
+      return Number.isSafeInteger(value) ? value : null;
+    }
+    const value = Number(matches[0][1].replace(/\D/g, ""));
+    return Number.isSafeInteger(value) ? value : null;
+  }
+
+  async function handleCardPaymentNotification(text, senderUsername) {
+    const amount = parseCardPaymentAmount(text);
+    if (!amount) return false;
+    const settings = doc.premiumSettings || {};
+    const allowedBots = Array.isArray(settings.payment?.cardBots)
+      ? settings.payment.cardBots
+      : ["HumoCardBot", "CardXabarBot"];
+    if (!allowedBots
+      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
+      .includes(String(senderUsername || "").toLowerCase())) return false;
+    const records = await UserSchedulerUsers.find({
+      botId: doc._id,
+      "pendingCardPremium.months": { $exists: true },
+    }).toArray();
+    const matched = records.find((record) => {
+      const pendingAmount = Number(
+        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
+      );
+      return pendingAmount === amount;
+    });
+    if (!matched) return false;
+    const pending = matched.pendingCardPremium;
+    const now = new Date();
+    const currentUntil = matched.premiumUntil instanceof Date
+      ? matched.premiumUntil
+      : matched.premiumUntil
+        ? new Date(matched.premiumUntil)
+        : null;
+    const start = currentUntil && currentUntil > now ? currentUntil : now;
+    const premiumUntil = new Date(start);
+    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: matched.userId },
+      {
+        $set: {
+          premium: true,
+          premiumUntil,
+          premiumPlan: pending.plan,
+          lastAutoPaymentText: String(text).slice(0, 2000),
+        },
+        $push: {
+          premiumHistory: {
+            plan: pending.plan,
+            amount: pending.amount,
+            paidAt: now,
+            method: "card-auto",
+            sender: senderUsername,
+          },
+        },
+        $unset: { pendingCardPremium: "" },
+      },
+    );
+    await bot.sendMessage(
+      matched.userId,
+      `✅ Avtotolov tasdiqlandi!\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
+    ).catch((error) => {
+      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
+    });
+    return true;
+  }
+
+  async function startPaymentMonitor() {
+    const runtime = await getUserRuntime(doc.ownerId);
+    return runtime.controls.startPaymentMonitor?.() || false;
+  }
+
+  async function stopPaymentMonitor() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.stopPaymentMonitor?.() || false;
+  }
+
+  function getPaymentMonitorStatus() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.getPaymentMonitorStatus?.() || {
+      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
+      connected: false,
+    };
+  }
+
+  function parseOuterCardPaymentAmount(text) {
+    const normalized = String(text || "").replace(/\u00a0/g, " ");
+    const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
+    if (!matches.length) {
+      const fallback = normalized.match(/(?:[+]\s*)?(\d[\d\s]{2,14})/);
+      if (!fallback) return null;
+      const value = Number(fallback[1].replace(/\D/g, ""));
+      return Number.isSafeInteger(value) ? value : null;
+    }
+    const value = Number(matches[0][1].replace(/\D/g, ""));
+    return Number.isSafeInteger(value) ? value : null;
+  }
+
+  async function handleOuterCardPayment(text, senderUsername) {
+    const amount = parseOuterCardPaymentAmount(text);
+    if (!amount) return false;
+    const settings = doc.premiumSettings || {};
+    const allowedBots = Array.isArray(settings.payment?.cardBots)
+      ? settings.payment.cardBots
+      : ["HumoCardBot", "CardXabarBot"];
+    if (!allowedBots
+      .map((name) => String(name).replace(/^@/, "").trim().toLowerCase())
+      .includes(String(senderUsername || "").toLowerCase())) return false;
+    const records = await UserSchedulerUsers.find({
+      botId: doc._id,
+      "pendingCardPremium.months": { $exists: true },
+    }).toArray();
+    const matched = records.find((record) => {
+      const pendingAmount = Number(
+        String(record.pendingCardPremium?.amount || "").replace(/\D/g, ""),
+      );
+      return pendingAmount === amount;
+    });
+    if (!matched) return false;
+    const pending = matched.pendingCardPremium;
+    const now = new Date();
+    const currentUntil = matched.premiumUntil instanceof Date
+      ? matched.premiumUntil
+      : matched.premiumUntil
+        ? new Date(matched.premiumUntil)
+        : null;
+    const start = currentUntil && currentUntil > now ? currentUntil : now;
+    const premiumUntil = new Date(start);
+    premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + Number(pending.months));
+    await UserSchedulerUsers.updateOne(
+      { botId: doc._id, userId: matched.userId },
+      {
+        $set: {
+          premium: true,
+          premiumUntil,
+          premiumPlan: pending.plan,
+          lastAutoPaymentText: String(text).slice(0, 2000),
+        },
+        $push: {
+          premiumHistory: {
+            plan: pending.plan,
+            amount: pending.amount,
+            paidAt: now,
+            method: "card-auto",
+            sender: senderUsername,
+          },
+        },
+        $unset: { pendingCardPremium: "" },
+      },
+    );
+    await bot.sendMessage(
+      matched.userId,
+      `✅ Avtotolov tasdiqlandi!\nPremium muddati: ${premiumUntil.toLocaleDateString("uz-UZ")} gacha`,
+    ).catch((error) => {
+      console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
+    });
+    return true;
+  }
+
+  async function startPaymentMonitor() {
+    const runtime = await getUserRuntime(doc.ownerId);
+    return runtime.controls.startPaymentMonitor?.() || false;
+  }
+
+  async function stopPaymentMonitor() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.stopPaymentMonitor?.() || false;
+  }
+
+  function getPaymentMonitorStatus() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.getPaymentMonitorStatus?.() || {
+      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
+      connected: false,
+    };
+  }
+
   async function handleApiRequest(action, body) {
     const webAppUser = validateWebAppInitData(body.initData, bot.token);
     if (String(webAppUser.id) !== String(ownerId)) {
@@ -2307,7 +2491,7 @@ function registerUserScheduler(bot, options) {
       ...options,
       doc: sessionDoc,
       Bots: sessionCollection,
-      onPaymentNotification: handleCardPaymentNotification,
+      onPaymentNotification: handleOuterCardPayment,
     });
     const entry = { bot: userBot, controls };
     try {
