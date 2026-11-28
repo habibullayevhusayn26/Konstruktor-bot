@@ -595,7 +595,8 @@ function registerUserSchedulerSession(bot, options) {
     if (footerUsername) return footerUsername;
     try {
       const botInfo = await bot.api("getMe");
-      footerUsername = String(botInfo?.username || "").replace(/^@/, "");
+      const liveUsername = String(botInfo?.username || "").replace(/^@/, "");
+      if (liveUsername) footerUsername = liveUsername;
     } catch (error) {
       console.error(`User scheduler ${doc._id} bot username aniqlanmadi:`, error.message);
     }
@@ -615,6 +616,8 @@ function registerUserSchedulerSession(bot, options) {
     const result = `${base}${footerWithSeparator}`;
     const robotIndex = base.length + footerWithSeparator.indexOf("🤖");
     const checkIndex = result.lastIndexOf("✅");
+    const mentionIndex = result.indexOf("@", base.length);
+    const mentionText = footerUsername ? `@${footerUsername}` : "";
     const robotId = EMOJI_IDS["🤖"]?.[0];
     const checkId = EMOJI_IDS["✅"]?.[0];
     const entities = [];
@@ -623,6 +626,12 @@ function registerUserSchedulerSession(bot, options) {
         offset: robotIndex,
         length: 2,
         documentId: robotId,
+      }));
+    }
+    if (mentionText && mentionIndex >= 0) {
+      entities.push(new Api.MessageEntityMention({
+        offset: mentionIndex,
+        length: mentionText.length,
       }));
     }
     if (checkId) {
@@ -868,7 +877,6 @@ function registerUserSchedulerSession(bot, options) {
             : index === 0
               ? schedule.messageRef.text || ""
               : "";
-        if (!originalCaption.trim()) continue;
         const captionParams =
           index === 0
             ? buildTextSendParams(originalCaption, schedule.messageRef)
