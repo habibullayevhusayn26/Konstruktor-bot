@@ -259,6 +259,11 @@ function registerUserSchedulerSession(bot, options) {
           { text: "Jadval", callback_data: "userbot:preview", style: "primary" },
         ],
         [{
+          text: doc.premium ? "⭐ Premium faol" : "⭐ Premium tarif",
+          callback_data: "userbot:premium",
+          style: "primary",
+        }],
+        [{
           text: "Ko'rib chiqish va boshlash",
           callback_data: "userbot:preview",
           style: "success",
@@ -307,6 +312,7 @@ function registerUserSchedulerSession(bot, options) {
       `🖼 USER BOT — BOSHQARUV PANELI\n` +
       `━━━━━━━━━━━━━━━━━━\n\n` +
       `👤 Akkaunt: ${account}\n` +
+      `⭐ Tarif: ${doc.premium ? "Premium" : "Bepul"}\n` +
       `💬 Tanlangan chatlar: ${chatCount} ta\n` +
       `⏱ Interval: ${formatInterval(Number(schedule.intervalSeconds) || MIN_INTERVAL_SECONDS)}\n` +
       `📨 Xabar turi: ${messageText}\n\n` +
@@ -588,7 +594,7 @@ function registerUserSchedulerSession(bot, options) {
   }
 
   function buildAutoFooter() {
-    return makeAutoFooter(footerUsername);
+    return doc.premium ? "" : makeAutoFooter(footerUsername);
   }
 
   async function refreshFooterUsername() {
@@ -939,6 +945,12 @@ function registerUserSchedulerSession(bot, options) {
 
     const selected = new Set(getSchedule().chatIds);
     const wasSelected = selected.has(target.peerId);
+    if (!wasSelected && !doc.premium && selected.size >= 20) {
+      await ctx.reply("Bepul tarifda 20 ta chat limiti bor. Cheksiz chatlar uchun Premium sotib oling.", {
+        reply_markup: chatPickerKeyboard(),
+      });
+      return;
+    }
     if (wasSelected) selected.delete(target.peerId);
     else selected.add(target.peerId);
     try {
@@ -1068,7 +1080,7 @@ function registerUserSchedulerSession(bot, options) {
       const intervalSeconds = Number(schedule.intervalSeconds);
       if (
         !Number.isInteger(intervalSeconds) ||
-        intervalSeconds < MIN_INTERVAL_SECONDS ||
+        intervalSeconds < (doc.premium ? MIN_INTERVAL_SECONDS : 600) ||
         intervalSeconds > MAX_INTERVAL_SECONDS
       ) {
         await saveSchedule({ enabled: false, nextRunAt: null });
@@ -1667,6 +1679,13 @@ function registerUserSchedulerSession(bot, options) {
 
       if (action === "panel") {
         await showPanel(ctx, true);
+      } else if (action === "premium") {
+        await ctx.reply(
+          doc.premium
+            ? "⭐ Premium tarif faol.\nCheksiz chatlar, 10 soniya interval va reklamasiz yuborish."
+            : "⭐ Premium tarif\nBepul: 20 chat, 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval, reklamasiz va kengaytirilgan imkoniyatlar.\nPremiumni Konstruktor asosiy botidagi «Premium» bo'limidan sotib oling.",
+          { reply_markup: panelKeyboard() },
+        );
       } else if (action === "connect") {
         await ctx.reply(
           "Mini App uchun ommaviy HTTPS manzili kerak. Render’da RENDER_EXTERNAL_URL avtomatik ishlatiladi; boshqa hostingda PUBLIC_API_URL sozlang.",
@@ -1714,7 +1733,9 @@ function registerUserSchedulerSession(bot, options) {
         await ctx.reply(
           action === "message"
             ? "Takror yuboriladigan xabarni yuboring: matn, media, fayl yoki forward. Tugmalar va premium emoji ham Telegram xabaridan saqlanadi."
-            : "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:00:10). Eng qisqa interval — 10 soniya.",
+            : doc.premium
+              ? "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:00:10). Premium eng qisqa interval — 10 soniya."
+              : "Takrorlanish intervalini soat:daqiqa:soniya formatida yuboring (masalan, 00:10:00). Bepul tarif eng qisqa interval — 10 daqiqa.",
           {
             reply_markup: {
               inline_keyboard: [[{
@@ -1803,10 +1824,14 @@ function registerUserSchedulerSession(bot, options) {
     }
     if (
       !Number.isInteger(Number(schedule.intervalSeconds)) ||
-      schedule.intervalSeconds < MIN_INTERVAL_SECONDS ||
+      schedule.intervalSeconds < (doc.premium ? MIN_INTERVAL_SECONDS : 600) ||
       schedule.intervalSeconds > MAX_INTERVAL_SECONDS
     ) {
-      return { error: "Interval noto'g'ri. Eng qisqa interval — 10 soniya." };
+      return {
+        error: doc.premium
+          ? "Interval noto'g'ri. Eng qisqa interval — 10 soniya."
+          : "Bepul tarifda eng qisqa interval — 10 daqiqa.",
+      };
     }
     if (!schedule.chatIds.length) return { error: "Kamida bitta guruh yoki kanalni tanlang." };
     const targets = await resolveSelectedTargets(schedule.chatIds);
@@ -1968,6 +1993,9 @@ function registerUserSchedulerSession(bot, options) {
     try {
       if (mode.type === "interval") {
         const intervalSeconds = parseInterval(value);
+        if (!doc.premium && intervalSeconds < 600) {
+          throw new Error("Bepul tarifda eng qisqa interval 10 daqiqa. Premium bilan 10 soniya.");
+        }
         await saveSchedule({ intervalSeconds, enabled: false, nextRunAt: null });
       } else {
         return;
@@ -1992,7 +2020,7 @@ function registerUserSchedulerSession(bot, options) {
 }
 
 function registerUserScheduler(bot, options) {
-  const { doc, Bots, UserSchedulerUsers } = options;
+  const { doc, Bots, UserSchedulerUsers, Users } = options;
   const createSessionBot = options.createSessionBot ||
     ((token, botOptions) => new BotConstructor(token, botOptions));
   const sessions = new Map();
@@ -2066,10 +2094,21 @@ function registerUserScheduler(bot, options) {
     if (stopping) throw new Error("User Bot hozir to'xtatilmoqda.");
     await migrateLegacyOwnerSession();
     const record = await loadOrCreateUserRecord(userId);
+    let premium = false;
+    if (Users && typeof Users.findOne === "function") {
+      const user = await Users.findOne({ _id: userId });
+      const premiumUntil = user?.premiumUntil instanceof Date
+        ? user.premiumUntil
+        : user?.premiumUntil
+          ? new Date(user.premiumUntil)
+          : null;
+      premium = Boolean(premiumUntil && premiumUntil > new Date());
+    }
     const sessionDoc = {
       ...doc,
       ownerId: userId,
       userSchedule: record.userSchedule || { ...EMPTY_SCHEDULE },
+      premium,
     };
     for (const field of ["userSessionEncrypted", "userAccount"]) {
       if (record[field] !== undefined) sessionDoc[field] = record[field];

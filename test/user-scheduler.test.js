@@ -333,8 +333,9 @@ test("each private user gets an isolated panel and schedule", async () => {
   assert.doesNotMatch(replies[0].text, /Yangi yuborishlar/);
   assert.match(replies[0].options.reply_markup.inline_keyboard[0][0].text, /Akkaunt/);
   assert.equal(replies[0].options.reply_markup.inline_keyboard[1].length, 2);
-  assert.equal(replies[0].options.reply_markup.inline_keyboard[3][0].style, "success");
-  assert.equal(replies[0].options.reply_markup.inline_keyboard[4][0].text, "To'xtatish");
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[3][0].text, "⭐ Premium tarif");
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[4][0].style, "success");
+  assert.equal(replies[0].options.reply_markup.inline_keyboard[5][0].text, "To'xtatish");
   assert.match(replies[1].text, /USER BOT — BOSHQARUV PANELI/);
   assert.equal(replies[1].options.reply_markup.inline_keyboard[0][0].style, "primary");
   assert.equal(replies[2].chatId, 88);

@@ -2087,6 +2087,17 @@ test("User Bot stats include linked account count", async () => {
   assert.match(edits.at(-1), /Akkaunti ulangan: 7/);
 });
 
+test("constructor main menu includes a Premium section", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "bot.js"),
+    "utf8",
+  );
+  assert.match(source, /PREMIUM TARIF/);
+  assert.match(source, /premium:buy:\(1\|3\|12\)/);
+});
+
 test("non-owner users can cancel their own User Bot input", async () => {
   const bot = new BotConstructor("test-token");
   const cancelledUsers = [];
