@@ -1610,24 +1610,6 @@ function registerUserSchedulerSession(bot, options) {
     return true;
   }
 
-  async function startPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
-  }
-
   function parseCardPaymentAmount(text) {
     const normalized = String(text || "").replace(/\u00a0/g, " ");
     const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
@@ -1700,24 +1682,6 @@ function registerUserSchedulerSession(bot, options) {
       console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
     });
     return true;
-  }
-
-  async function startPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
   }
 
   function parseOuterCardPaymentAmount(text) {
@@ -1794,24 +1758,6 @@ function registerUserSchedulerSession(bot, options) {
     return true;
   }
 
-  async function startPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
-  }
-
   function parseOuterPaymentAmount(text) {
     const normalized = String(text || "").replace(/\u00a0/g, " ");
     const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
@@ -1884,24 +1830,6 @@ function registerUserSchedulerSession(bot, options) {
     return true;
   }
 
-  async function startOuterPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopOuterPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getOuterPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
-  }
-
   function parseOuterPaymentAmount(text) {
     const normalized = String(text || "").replace(/\u00a0/g, " ");
     const matches = [...normalized.matchAll(/(?:[+]\s*)?(\d[\d\s]{2,14})(?:\s*)(?:UZS|so'm|sum|сум|сумма)/gi)];
@@ -1972,24 +1900,6 @@ function registerUserSchedulerSession(bot, options) {
       console.error(`User scheduler ${doc._id} avtotolov xabarini yubora olmadi:`, error.message);
     });
     return true;
-  }
-
-  async function startOuterPaymentMonitor() {
-    const runtime = await getUserRuntime(doc.ownerId);
-    return runtime.controls.startPaymentMonitor?.() || false;
-  }
-
-  async function stopOuterPaymentMonitor() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.stopPaymentMonitor?.() || false;
-  }
-
-  function getOuterPaymentMonitorStatus() {
-    const runtime = sessions.get(doc.ownerId);
-    return runtime?.controls.getPaymentMonitorStatus?.() || {
-      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
-      connected: false,
-    };
   }
 
   async function handleApiRequest(action, body) {
@@ -3190,6 +3100,24 @@ function registerUserScheduler(bot, options) {
     }
   }
 
+  async function startOuterPaymentMonitor() {
+    const runtime = await getUserRuntime(doc.ownerId);
+    return runtime.controls.startPaymentMonitor?.() || false;
+  }
+
+  async function stopOuterPaymentMonitor() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.stopPaymentMonitor?.() || false;
+  }
+
+  function getOuterPaymentMonitorStatus() {
+    const runtime = sessions.get(doc.ownerId);
+    return runtime?.controls.getPaymentMonitorStatus?.() || {
+      enabled: Boolean(doc.premiumSettings?.autoPaymentEnabled),
+      connected: false,
+    };
+  }
+
   async function handleApiRequest(action, body) {
     const webAppUser = validateWebAppInitData(body.initData, bot.token);
     const runtime = await getUserRuntime(webAppUser.id);
@@ -3257,6 +3185,9 @@ function registerUserScheduler(bot, options) {
     delete: deleteRuntime,
     cancelPending,
     handleApiRequest,
+    startPaymentMonitor: startOuterPaymentMonitor,
+    stopPaymentMonitor: stopOuterPaymentMonitor,
+    getPaymentMonitorStatus: getOuterPaymentMonitorStatus,
   };
 }
 

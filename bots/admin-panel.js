@@ -566,8 +566,8 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
         await ctx.reply("Avtotolovni tekshiradigan bot username larini vergul bilan yuboring:\nMasalan: HumoCardBot, CardXabarBot");
         return;
       case "admin:premium-auto-on":
-        if (!premiumSettingsReady(doc) || !doc.userSessionEncrypted) {
-          await ctx.reply("Avtotolovni yoqish uchun admin avval Telegram akkauntini User Bot Mini App orqali ulashi kerak.");
+        if (!premiumSettingsReady(doc)) {
+          await ctx.reply("Avtotolovni yoqish uchun avval Premium karta raqamini sozlang.");
           return;
         }
         doc.premiumSettings = { ...(doc.premiumSettings || {}), autoPaymentEnabled: true };
