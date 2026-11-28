@@ -326,6 +326,78 @@ test("admin stores TolovAPI credentials encrypted and deletes the submitted key 
   assert.ok(replies.every(({ text }) => !text.includes("secret-shop-key")));
 });
 
+test("admin can find TolovAPI transaction details by transaction ID", async () => {
+  const replies = [];
+  const bot = new BotConstructor("test-token");
+  const transactionId = "TXN-MIYV2S00-ABCDEF123456";
+  const payment = {
+    transactionId,
+    userId: 701,
+    purpose: "balance",
+    requestedAmount: 1500,
+    amount: 1501,
+    status: "paid",
+    paymentId: "provider-payment-1",
+    orderId: "order-1",
+    cardLast4: "8593",
+    createdAt: new Date("2026-11-28T10:00:00.000Z"),
+    expiresAt: new Date("2026-11-28T10:05:00.000Z"),
+    paidAt: new Date("2026-11-28T10:01:00.000Z"),
+  };
+  const { registerAdminPanel } = require("../bots/admin-panel");
+  registerAdminPanel(bot, {
+    doc: {
+      _id: 123456,
+      ownerId: 77,
+      username: "test_user_bot",
+      type: "user-scheduler",
+    },
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    Subs: { countDocuments: async () => 0 },
+    UserSchedulerUsers: {
+      findOne: async (filter) => {
+        assert.deepEqual(filter, {
+          botId: 123456,
+          "tolovPaymentHistory.transactionId": transactionId,
+        });
+        return { userId: 701, tolovPaymentHistory: [payment] };
+      },
+    },
+  });
+  bot.sendMessage = async (_chatId, text) => {
+    replies.push(text);
+    return { message_id: replies.length };
+  };
+  bot.answerCallbackQuery = async () => ({});
+  bot.api = async () => ({ message_id: 1 });
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "search-payment",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 1 },
+      data: "admin:premium:tolov-search",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 2,
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: transactionId,
+    },
+  });
+
+  const details = replies.join("\n").replace(/\u00a0/g, " ");
+  assert.match(details, /TolovAPI tranzaksiyasi/);
+  assert.match(details, new RegExp(transactionId));
+  assert.match(details, /To'langan/);
+  assert.match(details, /Telegram ID: 701/);
+  assert.match(details, /1 501 so'm/);
+  assert.match(details, /provider-payment-1/);
+  assert.match(details, /order-1/);
+});
+
 test("balance Premium purchase deducts atomically and preserves current expiry", async () => {
   const user = {
     botId: 123456,

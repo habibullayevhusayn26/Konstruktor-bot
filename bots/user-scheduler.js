@@ -86,9 +86,12 @@ async function purchasePremiumWithBalance({
 
 function getTolovPaymentReply(result) {
   if (result.status === "amount_busy") {
+    const suggestedAmount = Number(result.suggestedAmount).toLocaleString("uz-UZ");
+    const requestedAmount = Number(result.requestedAmount).toLocaleString("uz-UZ");
     return {
-      text: `Bu summa hozir band. TolovAPI ${Number(result.suggestedAmount).toLocaleString("uz-UZ")} so'm taklif qildi.\n` +
-        "Davom etishdan oldin taklif qilingan summani tasdiqlang.",
+      text: `Bu summa hozir band. Siz so'ragan summa: ${requestedAmount} so'm.\n` +
+        `TolovAPI taklif qilgan aniq summa: ${suggestedAmount} so'm.\n` +
+        `Davom etsangiz, aynan ${suggestedAmount} so'm yuborishingiz kerak. Tasdiqlashdan oldin tekshiring.`,
       reply_markup: {
         inline_keyboard: [[
           { text: "✅ Shu summada davom etish", callback_data: "userbot:tolov-confirm", style: "success" },
@@ -100,11 +103,21 @@ function getTolovPaymentReply(result) {
   if (result.status === "created" || result.status === "existing") {
     const payment = result.payment;
     const expiresAt = new Date(payment.expiresAt);
+    const expiryText = Number.isFinite(expiresAt.getTime())
+      ? expiresAt.toLocaleTimeString("uz-UZ", {
+          timeZone: "Asia/Tashkent",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+      : "5 daqiqa ichida";
     return {
-      text: `💳 To'lovni 5 daqiqa ichida amalga oshiring.\n\n` +
+      text: `💳 To'lov 5 daqiqa ichida amalga oshirilishi kerak.\n\n` +
+        `Tranzaksiya ID: ${payment.transactionId || "—"}\n` +
         `Karta: ${payment.cardNumber}\n` +
         `Summa: ${Number(payment.amount).toLocaleString("uz-UZ")} so'm\n` +
-        `Amal qilish muddati: ${expiresAt.toLocaleTimeString("uz-UZ", { timeZone: "Asia/Tashkent" })}\n\n` +
+        `Amal qilish muddati: ${expiryText} (Toshkent vaqti)\n\n` +
+        `⚠️ Kartaga aynan ${Number(payment.amount).toLocaleString("uz-UZ")} so'm yuboring. Boshqa summa bilan to'lov avtomatik aniqlanmasligi mumkin.\n\n` +
         "To'lov tasdiqlangach, balans yoki Premium avtomatik yangilanadi.",
       reply_markup: {
         inline_keyboard: [[{
@@ -117,7 +130,8 @@ function getTolovPaymentReply(result) {
   }
   if (result.status === "pending") {
     return {
-      text: `To'lov hali kutilmoqda: ${Number(result.payment.amount).toLocaleString("uz-UZ")} so'm.`,
+      text: `To'lov hali kutilmoqda.\nTranzaksiya ID: ${result.payment.transactionId || "—"}\n` +
+        `Kartaga aynan ${Number(result.payment.amount).toLocaleString("uz-UZ")} so'm yuboring.`,
       reply_markup: {
         inline_keyboard: [[{
           text: "❌ To'lovni bekor qilish",
@@ -1797,7 +1811,7 @@ function registerUserSchedulerSession(bot, options) {
         );
       } else if (action === "balance") {
         if (!tolovPayments?.isConfigured()) {
-          await ctx.reply("Avto to'lov hozircha sozlanmagan. Bot egasi server sozlamalarini tekshirishi kerak.");
+          await ctx.reply("Avto to'lov hozircha sozlanmagan. Bot egasi admin panelida Shop ID va Shop Key kiritsin.");
           return;
         }
         inputModes.set(ownerId, { type: "balance-topup" });
@@ -2517,7 +2531,7 @@ function registerUserScheduler(bot, options) {
     }
     if (action === "autopay") {
       if (!tolovPayments.isConfigured()) {
-        await ctx.reply("TolovAPI hozircha sozlanmagan. Bot egasi server sozlamalarini tekshirishi kerak.");
+        await ctx.reply("TolovAPI hozircha sozlanmagan. Bot egasi admin panelida Shop ID va Shop Key kiritsin.");
         return;
       }
       const { tolovApiPrices } = getPremiumSettings();

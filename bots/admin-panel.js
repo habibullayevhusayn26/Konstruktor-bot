@@ -373,6 +373,68 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       return;
     }
 
+    if (pendingAction === "tolov-payment-search") {
+      const transactionId = ctx.text?.trim().toUpperCase() || "";
+      if (!/^TXN-[A-Z0-9]+-[A-F0-9]{12}$/.test(transactionId)) {
+        await ctx.reply("Tranzaksiya ID formati noto'g'ri. `TXN-...` ko'rinishidagi ID yuboring yoki /cancel bosing.");
+        return;
+      }
+      if (typeof UserSchedulerUsers?.findOne !== "function") {
+        pendingAction = null;
+        await ctx.reply("To'lovlar bazasi mavjud emas; tranzaksiyani qidirib bo'lmadi.");
+        return;
+      }
+
+      const user = await UserSchedulerUsers.findOne({
+        botId: doc._id,
+        "tolovPaymentHistory.transactionId": transactionId,
+      });
+      const payment = user?.tolovPaymentHistory?.find(
+        (entry) => entry.transactionId === transactionId,
+      );
+      pendingAction = null;
+      if (!payment) {
+        await ctx.reply(`Tranzaksiya topilmadi: ${transactionId}`);
+        return;
+      }
+
+      const formatDate = (value) => {
+        const date = value ? new Date(value) : null;
+        return date && Number.isFinite(date.getTime())
+          ? date.toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })
+          : "—";
+      };
+      const statuses = {
+        pending: "Kutilmoqda",
+        paid: "To'langan",
+        cancelled: "Bekor qilingan",
+        expired: "Muddati tugagan",
+        test: "Test to'lovi",
+      };
+      const purpose = payment.purpose === "balance"
+        ? "Balansni to'ldirish"
+        : payment.purpose === "premium"
+          ? `Premium (${payment.months || "?"} oy)`
+          : payment.purpose || "—";
+      await ctx.reply(
+        `🔎 TolovAPI tranzaksiyasi\n\n` +
+          `Tranzaksiya ID: ${payment.transactionId}\n` +
+          `Holati: ${statuses[payment.status] || payment.status || "—"}\n` +
+          `Foydalanuvchi Telegram ID: ${payment.userId || user.userId}\n` +
+          `Maqsad: ${purpose}\n` +
+          `So'ralgan summa: ${Number(payment.requestedAmount || payment.amount).toLocaleString("uz-UZ")} so'm\n` +
+          `Yuborilishi kerak bo'lgan summa: ${Number(payment.amount).toLocaleString("uz-UZ")} so'm\n` +
+          `TolovAPI Payment ID: ${payment.paymentId || "—"}\n` +
+          `Order ID: ${payment.orderId || "—"}\n` +
+          `Karta: ${payment.cardLast4 ? `**** ${payment.cardLast4}` : "—"}\n` +
+          `Yaratilgan: ${formatDate(payment.createdAt)}\n` +
+          `Muddati: ${formatDate(payment.expiresAt)}\n` +
+          `To'langan: ${formatDate(payment.paidAt)}\n` +
+          `Yakunlangan: ${formatDate(payment.completedAt)}`,
+      );
+      return;
+    }
+
     if (pendingAction === "broadcast-media") {
       const hasMedia =
         ctx.message.photo?.length ||
@@ -550,7 +612,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|premium:tolov|premium:tolov:shop-id|premium:tolov:shop-key|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|premium:tolov|premium:tolov:shop-id|premium:tolov:shop-key|premium:tolov-search|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -600,6 +662,14 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
         pendingAction = "premium-tolov-shop-key";
         await ctx.reply("TolovAPI Shop Key'ni bitta matn xabarida yuboring. U shifrlanib saqlanadi va chatdan o'chiriladi (/cancel — bekor qilish).");
         return;
+      case "admin:premium:tolov-search":
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("TolovAPI tranzaksiyalarini qidirish faqat User Bot uchun mavjud.");
+          return;
+        }
+        pendingAction = "tolov-payment-search";
+        await ctx.reply("Tranzaksiya ID'ni yuboring (masalan, `TXN-...`) yoki /cancel bosing.");
+        return;
       case "admin:premium": {
         if (doc.type !== "user-scheduler") {
           await ctx.reply("Premium sozlamalari faqat User Bot uchun mavjud.");
@@ -628,6 +698,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
                 [{ text: "💳 TolovAPI/balans narxlarini sozlash", callback_data: "admin:premium:tolov" }],
                 [{ text: "🆔 TolovAPI Shop ID", callback_data: "admin:premium:tolov:shop-id" }],
                 [{ text: "🔑 TolovAPI Shop Key", callback_data: "admin:premium:tolov:shop-key" }],
+                [{ text: "🔎 Tranzaksiya ID bo'yicha qidirish", callback_data: "admin:premium:tolov-search" }],
                 [{ text: "⬅️ Orqaga", callback_data: "admin:stats" }],
               ],
             },

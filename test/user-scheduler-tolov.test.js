@@ -18,6 +18,7 @@ function createPaymentStore() {
     record,
   );
   const matches = (record, filter) => Object.entries(filter).every(([key, expected]) => {
+    if (key === "$or") return expected.some((condition) => matches(record, condition));
     const actual = getPath(record, key);
     if (expected && typeof expected === "object" && !Array.isArray(expected)) {
       if (Object.prototype.hasOwnProperty.call(expected, "$exists")) {
@@ -213,6 +214,8 @@ test("amount-busy suggestions require confirmation before creating Premium payme
     assert.equal(user.premiumHistory.length, 1);
     assert.equal(user.premiumHistory[0].method, "tolovapi");
     assert.equal(user.pendingTolovPayment, undefined);
+    assert.match(user.tolovPaymentHistory[0].transactionId, /^TXN-[A-Z0-9]+-[A-F0-9]{12}$/);
+    assert.equal(user.tolovPaymentHistory[0].status, "paid");
     assert.equal(notifications.length, 1);
     assert.match(notifications[0].text, /Premium faollashtirildi/);
     assert.equal((await service.check(77)).status, "none");
@@ -260,33 +263,38 @@ test("paid balance top-ups credit the User Bot balance once", async () => {
   });
 
   try {
-    assert.equal(
-      (await service.create(77, { purpose: "balance", amount: 25000 })).status,
-      "created",
-    );
+    const created = await service.create(77, { purpose: "balance", amount: 25000 });
+    assert.equal(created.status, "created");
+    assert.equal(created.payment.requestedAmount, 25000);
+    assert.equal(created.payment.amount, 25001);
+    assert.match(created.payment.transactionId, /^TXN-[A-Z0-9]+-[A-F0-9]{12}$/);
     assert.equal((await service.check(77)).status, "paid");
-    assert.equal((await store.collection.findOne({ botId: 88, userId: 77 })).balance, 25000);
+    assert.equal((await store.collection.findOne({ botId: 88, userId: 77 })).balance, 25001);
     assert.equal((await service.check(77)).status, "none");
     const user = await store.collection.findOne({ botId: 88, userId: 77 });
     assert.equal(user.balanceHistory.length, 1);
     assert.equal(user.autoPaymentHistory.length, 1);
+    assert.equal(user.autoPaymentHistory[0].transactionId, created.payment.transactionId);
+    assert.equal(user.tolovPaymentHistory[0].status, "paid");
   } finally {
     service.stop();
   }
 });
 
-test("expired pending TolovAPI payment is cancelled without credit", async () => {
+test("concurrent top-ups receive distinct amounts and expire within five minutes", async () => {
   const store = createPaymentStore();
   const now = Date.now();
+  const requests = [];
   const api = {
     isConfigured: () => true,
     async createPayment(orderId, amount) {
+      requests.push({ orderId, amount });
       return {
         ok: true,
-        payment_id: "payment-expired",
+        payment_id: `payment-${requests.length}`,
         amount,
         card_number: "8600 0000 0000 0000",
-        expires_at: new Date(now - 1).toISOString(),
+        expires_at: new Date(now + 60 * 60_000).toISOString(),
       };
     },
     async paymentStatus() {
@@ -305,11 +313,58 @@ test("expired pending TolovAPI payment is cancelled without credit", async () =>
   });
 
   try {
+    const [first, second] = await Promise.all([
+      service.create(77, { purpose: "balance", amount: 1500 }),
+      service.create(78, { purpose: "balance", amount: 1500 }),
+    ]);
+    assert.deepEqual(requests.map((request) => request.amount), [1501, 1502]);
+    assert.deepEqual([first.payment.amount, second.payment.amount], [1501, 1502]);
+    for (const result of [first, second]) {
+      assert.equal(result.payment.expiresAt.getTime(), now + 5 * 60_000);
+    }
+  } finally {
+    service.stop();
+  }
+});
+
+test("expired pending TolovAPI payment is cancelled without credit", async () => {
+  const store = createPaymentStore();
+  const now = Date.now();
+  let currentTime = now;
+  const api = {
+    isConfigured: () => true,
+    async createPayment(orderId, amount) {
+      return {
+        ok: true,
+        payment_id: "payment-expired",
+        amount,
+        card_number: "8600 0000 0000 0000",
+        expires_at: new Date(now + 60_000).toISOString(),
+      };
+    },
+    async paymentStatus() {
+      return { ok: true, status: "pending" };
+    },
+    async cancelPayment() {
+      return { ok: true, status: "cancel" };
+    },
+  };
+  const service = createTolovPaymentService({
+    botId: 88,
+    UserSchedulerUsers: store.collection,
+    api,
+    notifyUser: async () => {},
+    now: () => currentTime,
+  });
+
+  try {
     await service.create(77, { purpose: "balance", amount: 10000 });
+    currentTime = now + 60_001;
     assert.equal((await service.check(77)).status, "expired");
     const user = await store.collection.findOne({ botId: 88, userId: 77 });
     assert.equal(user.balance, 0);
     assert.equal(user.pendingTolovPayment, undefined);
+    assert.equal(user.tolovPaymentHistory[0].status, "expired");
   } finally {
     service.stop();
   }
@@ -490,11 +545,15 @@ test("User Bot balance button accepts a top-up amount and creates its payment", 
     });
 
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].amount, 30000);
-    assert.ok(sent.some(({ method, payload }) =>
+    assert.equal(requests[0].amount, 30001);
+    const paymentMessage = sent.find(({ method, payload }) =>
       method === "sendMessage" &&
-      payload.text.includes("8600 0000 0000 0000"),
-    ));
+      payload.text.includes("8600 0000 0000 0000") &&
+      payload.text.includes("aynan") &&
+      payload.text.includes("yuboring"),
+    );
+    assert.ok(paymentMessage);
+    assert.match(paymentMessage.payload.text.replace(/\u00a0/g, " "), /aynan 30 001 so'm yuboring/);
   } finally {
     await runtime.stop();
   }

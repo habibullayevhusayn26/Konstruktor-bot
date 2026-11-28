@@ -15,6 +15,35 @@ function positiveAmount(value) {
   return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
 }
 
+function updatePaymentHistory(history, payment, userId, status, extra = {}) {
+  let updated = false;
+  const next = (Array.isArray(history) ? history : []).map((entry) => {
+    if (entry.transactionId !== payment.transactionId) return entry;
+    updated = true;
+    return { ...entry, status, ...extra };
+  });
+  if (!updated) {
+    next.push({
+      transactionId: payment.transactionId,
+      botId: payment.botId,
+      userId,
+      provider: "tolovapi",
+      paymentId: payment.paymentId,
+      orderId: payment.orderId,
+      purpose: payment.purpose,
+      requestedAmount: payment.requestedAmount || payment.amount,
+      amount: payment.amount,
+      ...(payment.months ? { months: payment.months } : {}),
+      cardLast4: payment.cardLast4 || "",
+      createdAt: payment.createdAt,
+      expiresAt: payment.expiresAt,
+      status,
+      ...extra,
+    });
+  }
+  return next;
+}
+
 function createTolovPaymentService({
   botId,
   UserSchedulerUsers,
@@ -25,7 +54,12 @@ function createTolovPaymentService({
 }) {
   const timers = new Map();
   const locks = new Map();
+  let creationLock = Promise.resolve();
   let stopped = false;
+
+  function createTransactionId() {
+    return `TXN-${Math.trunc(now()).toString(36).toUpperCase()}-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
+  }
 
   async function withUserLock(userId, operation) {
     const previous = locks.get(userId) || Promise.resolve();
@@ -38,6 +72,18 @@ function createTolovPaymentService({
     } finally {
       release();
       if (locks.get(userId) === current) locks.delete(userId);
+    }
+  }
+
+  async function withCreationLock(operation) {
+    const previous = creationLock;
+    let release;
+    creationLock = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
     }
   }
 
@@ -68,11 +114,115 @@ function createTolovPaymentService({
     }
   }
 
-  async function clearPendingPayment(userId, paymentId) {
+  async function clearPendingPayment(userId, payment, status) {
+    const user = await UserSchedulerUsers.findOne({ botId, userId });
+    if (!user?.pendingTolovPayment || user.pendingTolovPayment.paymentId !== payment.paymentId) {
+      return { matchedCount: 0 };
+    }
     return UserSchedulerUsers.updateOne(
-      { botId, userId, "pendingTolovPayment.paymentId": paymentId },
-      { $unset: { pendingTolovPayment: "" } },
+      { botId, userId, "pendingTolovPayment.paymentId": payment.paymentId },
+      {
+        $unset: { pendingTolovPayment: "" },
+        $set: {
+          tolovPaymentHistory: updatePaymentHistory(
+            user.tolovPaymentHistory,
+            payment,
+            userId,
+            status,
+            { completedAt: new Date(now()) },
+          ),
+        },
+      },
     );
+  }
+
+  async function trackPendingPayment(userId, payment, user) {
+    const createdAtValue = new Date(payment.createdAt).getTime();
+    const createdAt = Number.isFinite(createdAtValue)
+      ? new Date(createdAtValue)
+      : new Date(now());
+    const maxExpiry = createdAt.getTime() + PAYMENT_TTL_MS;
+    const providerExpiry = new Date(payment.expiresAt).getTime();
+    const expiresAt = new Date(
+      Number.isFinite(providerExpiry) ? Math.min(providerExpiry, maxExpiry) : maxExpiry,
+    );
+    const tracked = {
+      ...payment,
+      transactionId: payment.transactionId || createTransactionId(),
+      requestedAmount: payment.requestedAmount || payment.amount,
+      createdAt,
+      expiresAt,
+    };
+    const history = updatePaymentHistory(
+      user.tolovPaymentHistory,
+      tracked,
+      userId,
+      "pending",
+    );
+    const alreadyTracked = user.tolovPaymentHistory?.some(
+      (entry) => entry.transactionId === tracked.transactionId,
+    );
+    const changed = tracked.transactionId !== payment.transactionId ||
+      tracked.requestedAmount !== payment.requestedAmount ||
+      createdAt.getTime() !== createdAtValue ||
+      expiresAt.getTime() !== providerExpiry ||
+      !alreadyTracked;
+    if (changed) {
+      const saved = await UserSchedulerUsers.updateOne(
+        { botId, userId, "pendingTolovPayment.paymentId": payment.paymentId },
+        {
+          $set: {
+            pendingTolovPayment: tracked,
+            tolovPaymentHistory: history,
+          },
+        },
+      );
+      if (saved.matchedCount !== 1) {
+        throw new Error("Kutilayotgan TolovAPI to'lovi o'zgargan; qayta urinib ko'ring.");
+      }
+    }
+    return tracked;
+  }
+
+  async function getReservedAmounts(excludeUserId) {
+    const users = await UserSchedulerUsers.find({
+      botId,
+      $or: [
+        { "pendingTolovPayment.paymentId": { $exists: true } },
+        { "pendingTolovRequest.suggestedAt": { $exists: true } },
+      ],
+    }).toArray();
+    const reserved = new Set();
+    const currentTime = now();
+    for (const user of users) {
+      if (String(user.userId) === String(excludeUserId)) continue;
+      const payment = user.pendingTolovPayment;
+      if (payment?.paymentId) {
+        const amount = positiveAmount(payment.amount);
+        if (amount) reserved.add(amount);
+      }
+      const request = user.pendingTolovRequest;
+      if (
+        request &&
+        currentTime - new Date(request.suggestedAt).getTime() <= PAYMENT_TTL_MS
+      ) {
+        const amount = positiveAmount(request.amount);
+        if (amount) reserved.add(amount);
+      }
+    }
+    return reserved;
+  }
+
+  async function nextAvailableAmount(startAmount, excludeUserId) {
+    const reserved = await getReservedAmounts(excludeUserId);
+    let amount = startAmount;
+    while (reserved.has(amount)) {
+      if (amount >= Number.MAX_SAFE_INTEGER) {
+        throw new Error("Yagona to'lov summasini ajratib bo'lmadi.");
+      }
+      amount += 1;
+    }
+    return amount;
   }
 
   function schedulePoll(userId, payment, delay = POLL_INTERVAL_MS) {
@@ -92,7 +242,7 @@ function createTolovPaymentService({
 
   async function applyPaidPayment(userId, payment, result) {
     if (result.test) {
-      await clearPendingPayment(userId, payment.paymentId);
+      await clearPendingPayment(userId, payment, "test");
       await sendNotification(userId, "TolovAPI test to‘lovi bo‘lgani uchun balans yoki Premium berilmadi.");
       return { status: "test" };
     }
@@ -110,6 +260,7 @@ function createTolovPaymentService({
     const paidAt = new Date(now());
     const historyEntry = {
       provider: "tolovapi",
+      transactionId: payment.transactionId,
       purpose: payment.purpose,
       amount: payment.amount,
       orderId: payment.orderId,
@@ -147,6 +298,16 @@ function createTolovPaymentService({
       update.$inc = { balance: payment.amount };
       update.$push.balanceHistory = historyEntry;
     }
+    update.$set = {
+      ...(update.$set || {}),
+      tolovPaymentHistory: updatePaymentHistory(
+        user.tolovPaymentHistory,
+        payment,
+        userId,
+        "paid",
+        { paidAt, completedAt: paidAt },
+      ),
+    };
 
     const saved = await UserSchedulerUsers.updateOne(
       { botId, userId, "pendingTolovPayment.paymentId": payment.paymentId },
@@ -157,8 +318,8 @@ function createTolovPaymentService({
     const updatedUser = await UserSchedulerUsers.findOne({ botId, userId });
     await onPaymentApplied?.(userId, updatedUser);
     const text = payment.purpose === "premium"
-      ? `TolovAPI to‘lovi tasdiqlandi.\n${PREMIUM_PLANS[payment.months].label} Premium faollashtirildi, ${premiumUntil.toLocaleDateString("uz-UZ")} gacha.`
-      : `TolovAPI to‘lovi tasdiqlandi.\nBalansingizga ${payment.amount.toLocaleString("uz-UZ")} so‘m qo‘shildi.`;
+      ? `TolovAPI to‘lovi tasdiqlandi.\nTranzaksiya ID: ${payment.transactionId}\n${PREMIUM_PLANS[payment.months].label} Premium faollashtirildi, ${premiumUntil.toLocaleDateString("uz-UZ")} gacha.`
+      : `TolovAPI to‘lovi tasdiqlandi.\nTranzaksiya ID: ${payment.transactionId}\nBalansingizga ${payment.amount.toLocaleString("uz-UZ")} so‘m qo‘shildi.`;
     await sendNotification(userId, text);
     return { status: "paid", premiumUntil };
   }
@@ -166,8 +327,9 @@ function createTolovPaymentService({
   async function check(userId) {
     return withUserLock(userId, async () => {
       const user = await UserSchedulerUsers.findOne({ botId, userId });
-      const payment = user?.pendingTolovPayment;
-      if (!payment?.paymentId) return { status: "none" };
+      const pendingPayment = user?.pendingTolovPayment;
+      if (!pendingPayment?.paymentId) return { status: "none" };
+      const payment = await trackPendingPayment(userId, pendingPayment, user);
 
       const result = await api.paymentStatus(payment.paymentId);
       if (result?.status === "paid") {
@@ -178,7 +340,7 @@ function createTolovPaymentService({
         return { status: "already_processed" };
       }
       if (result?.status === "cancel") {
-        await clearPendingPayment(userId, payment.paymentId);
+        await clearPendingPayment(userId, payment, "cancelled");
         await sendNotification(userId, "TolovAPI to‘lovi bekor qilindi.");
         return { status: "cancel" };
       }
@@ -197,7 +359,7 @@ function createTolovPaymentService({
           const applied = await applyPaidPayment(userId, payment, paid);
           if (applied.status !== "already_processed") return applied;
         } else if (canceled?.status === "cancel") {
-          await clearPendingPayment(userId, payment.paymentId);
+          await clearPendingPayment(userId, payment, "expired");
           await sendNotification(userId, "To‘lov vaqti tugadi. Qayta urinib ko‘rishingiz mumkin.");
           return { status: "expired" };
         } else if (!canceled?.ok) {
@@ -210,11 +372,15 @@ function createTolovPaymentService({
   }
 
   async function createProviderPayment(userId, request) {
+    const createdAt = new Date(now());
     const result = await api.createPayment(request.orderId, request.amount);
     if (result?.error_code === "amount_busy") {
-      const suggestedAmount = positiveAmount(result.suggested_amount);
+      let suggestedAmount = positiveAmount(result.suggested_amount);
       if (!suggestedAmount) {
         throw new Error("TolovAPI band summa uchun yaroqli muqobil summa bermadi.");
+      }
+      if (request.purpose === "balance") {
+        suggestedAmount = await nextAvailableAmount(suggestedAmount, userId);
       }
       await UserSchedulerUsers.updateOne(
         { botId, userId },
@@ -222,7 +388,7 @@ function createTolovPaymentService({
           $set: {
             pendingTolovRequest: {
               ...request,
-              requestedAmount: request.amount,
+              requestedAmount: request.requestedAmount || request.amount,
               amount: suggestedAmount,
               suggestedAt: new Date(now()),
             },
@@ -230,7 +396,11 @@ function createTolovPaymentService({
         },
         { upsert: true },
       );
-      return { status: "amount_busy", requestedAmount: request.amount, suggestedAmount };
+      return {
+        status: "amount_busy",
+        requestedAmount: request.requestedAmount || request.amount,
+        suggestedAmount,
+      };
     }
     if (!result?.ok) {
       throw new Error(result?.error || "TolovAPI to'lov yaratilmadi.");
@@ -239,26 +409,47 @@ function createTolovPaymentService({
     const paymentId = result.payment_id == null ? "" : String(result.payment_id);
     const amount = positiveAmount(result.amount);
     const cardNumber = typeof result.card_number === "string" ? result.card_number.trim() : "";
-    const expiresAt = new Date(result.expires_at);
-    if (!paymentId || !amount || !cardNumber || !Number.isFinite(expiresAt.getTime())) {
+    const providerExpiresAt = new Date(result.expires_at);
+    if (
+      !paymentId ||
+      !amount ||
+      amount !== request.amount ||
+      !cardNumber ||
+      !Number.isFinite(providerExpiresAt.getTime())
+    ) {
       if (paymentId) {
         await api.cancelPayment(paymentId).catch((error) => {
           console.error(`User scheduler ${botId} TolovAPI to'lovini bekor qila olmadi:`, error.message);
         });
       }
-      throw new Error("TolovAPI to'lov ma'lumotlari to'liq emas.");
+      throw new Error("TolovAPI to'lov ma'lumotlari yoki summa mos emas.");
+    }
+
+    const expiresAt = new Date(Math.min(
+      providerExpiresAt.getTime(),
+      createdAt.getTime() + PAYMENT_TTL_MS,
+    ));
+    if (expiresAt.getTime() <= now()) {
+      await api.cancelPayment(paymentId).catch((error) => {
+        console.error(`User scheduler ${botId} muddati o'tgan TolovAPI to'lovini bekor qila olmadi:`, error.message);
+      });
+      throw new Error("TolovAPI to'lovining 5 daqiqalik muddati tugagan. Qaytadan urinib ko'ring.");
     }
 
     const payment = {
+      transactionId: createTransactionId(),
+      botId,
+      userId,
       paymentId,
       orderId: request.orderId,
       purpose: request.purpose,
       amount,
+      requestedAmount: request.requestedAmount || request.amount,
       months: request.months,
       cardNumber,
-      cardLast4: String(result.card_last4 || ""),
+      cardLast4: String(result.card_last4 || cardNumber.slice(-4)),
       expiresAt,
-      createdAt: new Date(now()),
+      createdAt,
     };
     try {
       const saved = await UserSchedulerUsers.updateOne(
@@ -269,6 +460,9 @@ function createTolovPaymentService({
         },
         {
           $set: { pendingTolovPayment: payment },
+          $push: {
+            tolovPaymentHistory: updatePaymentHistory([], payment, userId, "pending")[0],
+          },
           $unset: { pendingTolovRequest: "" },
         },
       );
@@ -287,10 +481,13 @@ function createTolovPaymentService({
 
   async function create(userId, { purpose, amount, months }) {
     if (!api.isConfigured()) {
-      throw new Error("TolovAPI sozlanmagan. Bot egasi server environment qiymatlarini kiritishi kerak.");
+      throw new Error("TolovAPI sozlanmagan. Bot egasi admin panelida Shop ID va Shop Key kiritsin.");
     }
     const normalizedAmount = positiveAmount(amount);
     if (!normalizedAmount) throw new Error("Summani musbat butun so'mda kiriting.");
+    if (purpose === "balance" && normalizedAmount >= Number.MAX_SAFE_INTEGER) {
+      throw new Error("Balans to'ldirish summasi ruxsat etilgan maksimal qiymatdan kichik bo'lishi kerak.");
+    }
     if (purpose !== "balance" && purpose !== "premium") {
       throw new Error("TolovAPI to'lov maqsadi noto'g'ri.");
     }
@@ -298,10 +495,11 @@ function createTolovPaymentService({
       throw new Error("Premium muddati noto'g'ri.");
     }
 
-    return withUserLock(userId, async () => {
+    return withUserLock(userId, () => withCreationLock(async () => {
       const user = await ensureUserRecord(userId);
       if (user.pendingTolovPayment?.paymentId) {
-        return { status: "existing", payment: user.pendingTolovPayment };
+        const payment = await trackPendingPayment(userId, user.pendingTolovPayment, user);
+        return { status: "existing", payment };
       }
       if (user.pendingTolovRequest) {
         const suggestedAt = new Date(user.pendingTolovRequest.suggestedAt).getTime();
@@ -317,19 +515,24 @@ function createTolovPaymentService({
           { $unset: { pendingTolovRequest: "" } },
         );
       }
+      const requestedAmount = normalizedAmount;
+      const paymentAmount = purpose === "balance"
+        ? await nextAvailableAmount(normalizedAmount + 1, userId)
+        : normalizedAmount;
       const request = {
         orderId: `ub${botId}_${userId}_${crypto.randomBytes(6).toString("hex")}`,
         purpose,
-        amount: normalizedAmount,
+        amount: paymentAmount,
+        requestedAmount,
         ...(purpose === "premium" ? { months: Number(months) } : {}),
       };
       return createProviderPayment(userId, request);
-    });
+    }));
   }
 
   async function confirm(userId) {
     if (!api.isConfigured()) throw new Error("TolovAPI sozlanmagan.");
-    return withUserLock(userId, async () => {
+    return withUserLock(userId, () => withCreationLock(async () => {
       const user = await UserSchedulerUsers.findOne({ botId, userId });
       const request = user?.pendingTolovRequest;
       if (!request) throw new Error("Tasdiqlash uchun kutilayotgan summa topilmadi.");
@@ -345,7 +548,7 @@ function createTolovPaymentService({
         throw new Error("TolovAPI taklif qilgan summa eskirgan. To'lovni qaytadan boshlang.");
       }
       return createProviderPayment(userId, request);
-    });
+    }));
   }
 
   async function cancel(userId) {
@@ -358,8 +561,9 @@ function createTolovPaymentService({
         );
         return { status: "cancelled" };
       }
-      const payment = user?.pendingTolovPayment;
-      if (!payment?.paymentId) return { status: "none" };
+      const pendingPayment = user?.pendingTolovPayment;
+      if (!pendingPayment?.paymentId) return { status: "none" };
+      const payment = await trackPendingPayment(userId, pendingPayment, user);
 
       const result = await api.cancelPayment(payment.paymentId);
       if (result?.status === "paid") {
@@ -370,7 +574,7 @@ function createTolovPaymentService({
         return applyPaidPayment(userId, payment, paid);
       }
       if (result?.status === "cancel") {
-        await clearPendingPayment(userId, payment.paymentId);
+        await clearPendingPayment(userId, payment, "cancelled");
         return { status: "cancelled" };
       }
       if (!result?.ok) throw new Error(result?.error || "TolovAPI to'lovni bekor qila olmadi.");
