@@ -195,7 +195,7 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
   });
 }
 
-function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel }) {
+function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel, encryptSecret }) {
   let pendingAction = null;
   let broadcastDraft = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
@@ -278,17 +278,17 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     if (!ctx.message || ctx.update.callback_query || !isOwner(ctx) || !pendingAction) {
       return;
     }
-    if (ctx.text.startsWith("/admin")) {
+    if (ctx.text?.startsWith("/admin")) {
       pendingAction = null;
       return;
     }
-    if (ctx.text.startsWith("/start")) {
+    if (ctx.text?.startsWith("/start")) {
       ctx.handled = true;
       pendingAction = null;
       await ctx.reply("Majburiy obuna tanlash bekor qilindi.");
       return;
     }
-    if (ctx.text.startsWith("/cancel")) {
+    if (ctx.text?.startsWith("/cancel")) {
       pendingAction = null;
       ctx.handled = true;
       await onCancel?.(ctx);
@@ -297,6 +297,82 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     ctx.handled = true;
+    if (pendingAction === "premium-tolov-shop-id") {
+      const shopId = ctx.text?.trim() || "";
+      if (!/^\d{1,32}$/.test(shopId)) {
+        await ctx.reply("Shop ID faqat raqamlardan iborat bo'lishi kerak. Qayta yuboring yoki /cancel bosing.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.tolovApi = { ...(premiumSettings.tolovApi || {}), shopId };
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("TolovAPI Shop ID saqlandi.", panelMarkup(doc));
+      return;
+    }
+
+    if (pendingAction === "premium-tolov-shop-key") {
+      const shopKey = ctx.text?.trim() || "";
+      if (!shopKey || shopKey.length > 1024 || /[\r\n]/.test(shopKey)) {
+        await ctx.reply("Shop Key bitta matn qatori bo'lishi va 1024 belgidan oshmasligi kerak. Qayta yuboring yoki /cancel bosing.");
+        return;
+      }
+      if (typeof encryptSecret !== "function") {
+        pendingAction = null;
+        await ctx.reply("Kalitni xavfsiz saqlash uchun shifrlash sozlamasi mavjud emas. Administratorga murojaat qiling.");
+        return;
+      }
+
+      let encryptedShopKey;
+      try {
+        encryptedShopKey = await encryptSecret(shopKey);
+      } catch (error) {
+        console.error(`@${doc.username} TolovAPI kalitini shifrlab bo'lmadi:`, error.message);
+        pendingAction = null;
+        await ctx.reply("Shop Key shifrlanmadi va saqlanmadi. Qayta urinib ko'ring.");
+        return;
+      }
+      if (typeof encryptedShopKey !== "string" || !encryptedShopKey) {
+        pendingAction = null;
+        await ctx.reply("Shop Key shifrlanmadi va saqlanmadi. Qayta urinib ko'ring.");
+        return;
+      }
+
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.tolovApi = {
+        ...(premiumSettings.tolovApi || {}),
+        shopKeyEncrypted: encryptedShopKey,
+      };
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+
+      try {
+        await ctx.api("deleteMessage", {
+          chat_id: ctx.chat.id,
+          message_id: ctx.message.message_id,
+        });
+      } catch (error) {
+        console.error(`@${doc.username} TolovAPI kalit kiritilgan xabarni o'chira olmadi:`, error.message);
+        await ctx.reply(
+          "Shop Key shifrlanib saqlandi, ammo yuborgan xabaringizni o'chira olmadim. Xavfsizlik uchun uni chatdan qo'lda o'chiring.",
+          panelMarkup(doc),
+        );
+        return;
+      }
+      await ctx.reply("TolovAPI Shop Key shifrlanib saqlandi. Kalit qayta ko'rsatilmaydi.", panelMarkup(doc));
+      return;
+    }
+
     if (pendingAction === "broadcast-media") {
       const hasMedia =
         ctx.message.photo?.length ||
@@ -409,6 +485,30 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       return;
     }
 
+    if (action === "premium-tolov-prices") {
+      const match = ctx.text.trim().match(/^(\d{1,9})\s*\/\s*(\d{1,9})\s*\/\s*(\d{1,9})$/);
+      if (!match) {
+        await ctx.reply("Format: `50000/120000/400000` — 1 oy / 3 oy / 12 oy (so'm).");
+        return;
+      }
+      const tolovApiPrices = { 1: Number(match[1]), 3: Number(match[2]), 12: Number(match[3]) };
+      if (!Object.values(tolovApiPrices).every((value) => Number.isSafeInteger(value) && value > 0)) {
+        await ctx.reply("Narxlar musbat butun so'm bo'lishi kerak.");
+        return;
+      }
+      const premiumSettings = { ...(doc.premiumSettings || {}) };
+      premiumSettings.tolovApiPrices = tolovApiPrices;
+      await Bots.updateOne(
+        { _id: doc._id, ownerId: doc.ownerId },
+        { $set: { premiumSettings } },
+      );
+      doc.premiumSettings = premiumSettings;
+      bot.config.premiumSettings = premiumSettings;
+      pendingAction = null;
+      await ctx.reply("TolovAPI va balans uchun Premium narxlari saqlandi.", panelMarkup(doc));
+      return;
+    }
+
     if (action === "welcome") {
       const welcome = ctx.text.trim().slice(0, 4000);
       await Bots.updateOne(
@@ -450,7 +550,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:stars|premium:tolov|premium:tolov:shop-id|premium:tolov:shop-key|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -476,6 +576,30 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
         pendingAction = "premium-stars";
         await ctx.reply("Stars narxlarini `100/250/800` formatida yuboring:\n1 oy / 3 oy / 12 oy.");
         return;
+      case "admin:premium:tolov":
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("TolovAPI sozlamalari faqat User Bot uchun mavjud.");
+          return;
+        }
+        pendingAction = "premium-tolov-prices";
+        await ctx.reply("TolovAPI va balans narxlarini `50000/120000/400000` formatida yuboring:\n1 oy / 3 oy / 12 oy (so'm).");
+        return;
+      case "admin:premium:tolov:shop-id":
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("TolovAPI sozlamalari faqat User Bot uchun mavjud.");
+          return;
+        }
+        pendingAction = "premium-tolov-shop-id";
+        await ctx.reply("TolovAPI Shop ID raqamini yuboring (/cancel — bekor qilish).");
+        return;
+      case "admin:premium:tolov:shop-key":
+        if (doc.type !== "user-scheduler") {
+          await ctx.reply("TolovAPI sozlamalari faqat User Bot uchun mavjud.");
+          return;
+        }
+        pendingAction = "premium-tolov-shop-key";
+        await ctx.reply("TolovAPI Shop Key'ni bitta matn xabarida yuboring. U shifrlanib saqlanadi va chatdan o'chiriladi (/cancel — bekor qilish).");
+        return;
       case "admin:premium": {
         if (doc.type !== "user-scheduler") {
           await ctx.reply("Premium sozlamalari faqat User Bot uchun mavjud.");
@@ -483,14 +607,27 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
         }
         const premiumSettings = doc.premiumSettings || {};
         const stars = premiumSettings.stars || { 1: 100, 3: 250, 12: 800 };
+        const tolovApiPrices = premiumSettings.tolovApiPrices ||
+          premiumSettings.card ||
+          { 1: 50000, 3: 120000, 12: 400000 };
+        const tolovApi = premiumSettings.tolovApi || {};
         await ctx.edit(
           `⭐ User Bot — Premium sozlamalari\n\n` +
             `Stars narxlari:\n1 oy — ${stars[1]} Stars\n3 oy — ${stars[3]} Stars\n12 oy — ${stars[12]} Stars\n\n` +
-            `To'lov usuli: Telegram Stars`,
+            `TolovAPI va balans narxlari:\n` +
+            `1 oy — ${Number(tolovApiPrices[1]).toLocaleString("uz-UZ")} so'm\n` +
+            `3 oy — ${Number(tolovApiPrices[3]).toLocaleString("uz-UZ")} so'm\n` +
+            `12 oy — ${Number(tolovApiPrices[12]).toLocaleString("uz-UZ")} so'm\n\n` +
+            `TolovAPI Shop ID: ${tolovApi.shopId || "Sozlanmagan"}\n` +
+            `TolovAPI Shop Key: ${tolovApi.shopKeyEncrypted ? "Ulangan (shifrlangan)" : "Sozlanmagan"}\n` +
+            `To'lov usullari: Telegram Stars, TolovAPI va User Bot balansi`,
           {
             reply_markup: {
               inline_keyboard: [
                 [{ text: "⭐ Stars narxlarini sozlash", callback_data: "admin:premium:stars" }],
+                [{ text: "💳 TolovAPI/balans narxlarini sozlash", callback_data: "admin:premium:tolov" }],
+                [{ text: "🆔 TolovAPI Shop ID", callback_data: "admin:premium:tolov:shop-id" }],
+                [{ text: "🔑 TolovAPI Shop Key", callback_data: "admin:premium:tolov:shop-key" }],
                 [{ text: "⬅️ Orqaga", callback_data: "admin:stats" }],
               ],
             },

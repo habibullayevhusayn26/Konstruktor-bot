@@ -12,6 +12,7 @@ const {
   makeAutoFooter,
   normalizePhoneNumber,
   parseInterval,
+  purchasePremiumWithBalance,
   registerUserScheduler,
   validateWebAppInitData,
 } = require("../bots/user-scheduler");
@@ -177,7 +178,7 @@ test("Premium purchase belongs to User Bot and not Konstruktor billing", () => {
   assert.doesNotMatch(constructorBot, /PREMIUM TARIF/);
 });
 
-test("User Bot Premium is available through Stars only", () => {
+test("User Bot Premium supports Stars, TolovAPI, and balance purchases", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const userScheduler = fs.readFileSync(
@@ -192,10 +193,184 @@ test("User Bot Premium is available through Stars only", () => {
   assert.match(userScheduler, /sendPremiumInvoice/);
   assert.match(userScheduler, /currency: "XTR"/);
   assert.match(userScheduler, /successful_payment/);
+  assert.match(userScheduler, /premium:autobuy/);
+  assert.match(userScheduler, /premium:balance/);
+  assert.match(userScheduler, /tolovPayments\.create/);
   assert.doesNotMatch(userScheduler, /premium:card|pendingCardPremium|pendingUniqueTopups|autoPaymentEnabled|HumoCardBot|CardXabarBot/);
   assert.match(adminPanel, /Premium sozlamalari/);
   assert.match(adminPanel, /premium-stars/);
+  assert.match(adminPanel, /premium-tolov-prices/);
   assert.doesNotMatch(adminPanel, /premium-card|premium-auto|premium:auto-account|Avtotolov botlarini sozlash/);
+});
+
+test("admin can edit TolovAPI Premium prices while Stars purchase stays independent", async () => {
+  const saved = [];
+  const bot = new BotConstructor("test-token");
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    type: "user-scheduler",
+    premiumSettings: { stars: { 1: 100, 3: 250, 12: 800 } },
+  };
+  bot.config = doc;
+  const { registerAdminPanel } = require("../bots/admin-panel");
+  registerAdminPanel(bot, {
+    doc,
+    Bots: {
+      updateOne: async (_filter, update) => {
+        saved.push(update.$set.premiumSettings);
+        return { matchedCount: 1 };
+      },
+    },
+    Subs: { countDocuments: async () => 0 },
+  });
+  const replies = [];
+  bot.sendMessage = async (chatId, text) => replies.push({ chatId, text });
+  bot.answerCallbackQuery = async () => ({});
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "open-premium",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 1 },
+      data: "admin:premium:tolov",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "60000/150000/450000",
+    },
+  });
+
+  assert.deepEqual(saved[0].tolovApiPrices, { 1: 60000, 3: 150000, 12: 450000 });
+});
+
+test("admin stores TolovAPI credentials encrypted and deletes the submitted key message", async () => {
+  const saved = [];
+  const apiCalls = [];
+  const replies = [];
+  const bot = new BotConstructor("test-token");
+  const doc = {
+    _id: 123456,
+    ownerId: 77,
+    username: "test_user_bot",
+    type: "user-scheduler",
+    premiumSettings: {},
+  };
+  bot.config = doc;
+  const { registerAdminPanel } = require("../bots/admin-panel");
+  registerAdminPanel(bot, {
+    doc,
+    Bots: {
+      updateOne: async (_filter, update) => {
+        saved.push(update.$set.premiumSettings);
+        return { matchedCount: 1 };
+      },
+    },
+    Subs: { countDocuments: async () => 0 },
+    encryptSecret: () => "ciphertext-test",
+  });
+  bot.sendMessage = async (chatId, text) => {
+    replies.push({ chatId, text });
+    return { message_id: replies.length };
+  };
+  bot.answerCallbackQuery = async () => ({});
+  bot.api = async (method, payload) => {
+    apiCalls.push({ method, payload });
+    return { message_id: apiCalls.length };
+  };
+
+  await bot.processUpdate({
+    callback_query: {
+      id: "set-shop-id",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 1 },
+      data: "admin:premium:tolov:shop-id",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 10,
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "12345",
+    },
+  });
+  await bot.processUpdate({
+    callback_query: {
+      id: "set-shop-key",
+      from: { id: 77 },
+      message: { chat: { id: 77, type: "private" }, message_id: 2 },
+      data: "admin:premium:tolov:shop-key",
+    },
+  });
+  await bot.processUpdate({
+    message: {
+      message_id: 11,
+      chat: { id: 77, type: "private" },
+      from: { id: 77 },
+      text: "secret-shop-key",
+    },
+  });
+
+  assert.equal(saved[0].tolovApi.shopId, "12345");
+  assert.equal(saved[1].tolovApi.shopId, "12345");
+  assert.equal(saved[1].tolovApi.shopKeyEncrypted, "ciphertext-test");
+  assert.doesNotMatch(JSON.stringify(saved), /secret-shop-key/);
+  assert.ok(apiCalls.some(({ method, payload }) =>
+    method === "deleteMessage" && payload.message_id === 11,
+  ));
+  assert.ok(replies.every(({ text }) => !text.includes("secret-shop-key")));
+});
+
+test("balance Premium purchase deducts atomically and preserves current expiry", async () => {
+  const user = {
+    botId: 123456,
+    userId: 77,
+    balance: 60000,
+    premiumUntil: new Date("2026-12-15T00:00:00.000Z"),
+    premiumHistory: [],
+  };
+  const UserSchedulerUsers = {
+    async findOne() {
+      return structuredClone(user);
+    },
+    async updateOne(filter, update) {
+      if (user.balance < filter.balance.$gte) return { matchedCount: 0 };
+      user.balance += update.$inc.balance;
+      Object.assign(user, update.$set);
+      user.premiumHistory.push(update.$push.premiumHistory);
+      return { matchedCount: 1 };
+    },
+  };
+  const now = new Date("2026-11-28T00:00:00.000Z");
+  const result = await purchasePremiumWithBalance({
+    UserSchedulerUsers,
+    botId: 123456,
+    userId: 77,
+    months: 1,
+    prices: { 1: 50000 },
+    now,
+  });
+
+  assert.equal(result.status, "purchased");
+  assert.equal(user.balance, 10000);
+  assert.equal(result.premiumUntil.toISOString(), "2027-01-15T00:00:00.000Z");
+  assert.equal(user.premiumHistory[0].method, "balance");
+
+  const insufficient = await purchasePremiumWithBalance({
+    UserSchedulerUsers,
+    botId: 123456,
+    userId: 77,
+    months: 1,
+    prices: { 1: 50000 },
+    now,
+  });
+  assert.equal(insufficient.status, "insufficient");
+  assert.equal(user.balance, 10000);
 });
 
 test("media caption fallback includes footer in the original media message", () => {

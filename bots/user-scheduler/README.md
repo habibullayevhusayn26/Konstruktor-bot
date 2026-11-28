@@ -69,5 +69,17 @@ Intervalni `soat:daqiqa:soniya` formatida kiriting (masalan, `00:00:10`).
 Telegram tez-tez yuborishni cheklashi mumkin; 10 soniyalik oraliq qo'yilgan
 bo'lsa ham, Telegram tomonidan vaqtinchalik limit qo'llanishi ehtimoli bor.
 
-Premium faqat Telegram Stars orqali sotib olinadi. Bot egasi User Bot admin
-panelidan 1, 3 va 12 oylik tariflar uchun Stars narxlarini o'zgartirishi mumkin.
+User Bot Premium’ni Telegram Stars, TolovAPI orqali karta yoki avval to'ldirilgan
+User Bot balansi bilan sotib olish mumkin. Balansni ham TolovAPI orqali to'ldirish
+mumkin. Bot egasi admin panelidan 1, 3 va 12 oylik Stars hamda so'm narxlarini
+o'zgartiradi.
+
+TolovAPI ulanishini User Bot egasi botning `/admin` panelidagi Premium
+sozlamalaridan o'rnatadi: Shop ID va Shop Key alohida kiritiladi. Shop Key
+`TOKEN_SECRET` yordamida shifrlanib bazada saqlanadi, panelda qayta ko'rsatilmaydi
+va kiritilgan xabar o'chiriladi. `TOKEN_SECRET` qiymatini o'zgartirish
+shifrlangan kalitlarni ochib bo'lmasligiga olib keladi; kalitni almashtirish
+uchun paneldan Shop Key'ni qayta kiriting. TolovAPI to'lov holati har 3 soniyada
+tekshiriladi; to'lov 5 daqiqa ichida yakunlanishi kerak va public webhook talab
+qilinmaydi. Summa band bo'lsa, TolovAPI taklif qilgan summani foydalanuvchi
+tasdiqlagandan keyingina yangi to'lov yaratiladi.

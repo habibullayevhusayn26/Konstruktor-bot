@@ -5,6 +5,8 @@ const { Api, TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 const { NewMessage } = require("teleproto/events");
 const { BotConstructor } = require("../bot-constructor");
+const { createTolovApi } = require("./user-scheduler/tolov-api");
+const { createTolovPaymentService } = require("./user-scheduler/tolov-payments");
 
 const MIN_INTERVAL_SECONDS = 10;
 const MAX_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
@@ -22,7 +24,114 @@ const PREMIUM_PLANS = Object.freeze({
   3: Object.freeze({ months: 3, stars: 250, label: "3 oy" }),
   12: Object.freeze({ months: 12, stars: 800, label: "12 oy" }),
 });
+const DEFAULT_TOLOV_PRICES = Object.freeze({ 1: 50000, 3: 120000, 12: 400000 });
 
+function getTolovPremiumPrices(settings) {
+  const saved = settings?.tolovApiPrices || settings?.card || {};
+  return {
+    1: Number(saved[1]) || DEFAULT_TOLOV_PRICES[1],
+    3: Number(saved[3]) || DEFAULT_TOLOV_PRICES[3],
+    12: Number(saved[12]) || DEFAULT_TOLOV_PRICES[12],
+  };
+}
+
+async function purchasePremiumWithBalance({
+  UserSchedulerUsers,
+  botId,
+  userId,
+  months,
+  prices,
+  now = new Date(),
+}) {
+  const plan = PREMIUM_PLANS[months];
+  const amount = Number(prices?.[months]);
+  if (!plan || !Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error("Premium narxi yoki muddati noto'g'ri.");
+  }
+  const user = await UserSchedulerUsers.findOne({ botId, userId });
+  const currentBalance = Number(user?.balance) || 0;
+  const currentUntil = user?.premiumUntil instanceof Date
+    ? user.premiumUntil
+    : user?.premiumUntil
+      ? new Date(user.premiumUntil)
+      : null;
+  const start = currentUntil && currentUntil > now ? currentUntil : now;
+  const premiumUntil = new Date(start);
+  premiumUntil.setUTCMonth(premiumUntil.getUTCMonth() + plan.months);
+  const result = await UserSchedulerUsers.updateOne(
+    { botId, userId, balance: { $gte: amount } },
+    {
+      $set: { premium: true, premiumUntil, premiumPlan: plan.label },
+      $inc: { balance: -amount },
+      $push: {
+        premiumHistory: {
+          plan: plan.label,
+          amount,
+          method: "balance",
+          paidAt: now,
+        },
+      },
+    },
+  );
+  if (result.matchedCount !== 1) {
+    return { status: "insufficient", amount, currentBalance };
+  }
+  return {
+    status: "purchased",
+    amount,
+    premiumUntil,
+    user: await UserSchedulerUsers.findOne({ botId, userId }),
+  };
+}
+
+function getTolovPaymentReply(result) {
+  if (result.status === "amount_busy") {
+    return {
+      text: `Bu summa hozir band. TolovAPI ${Number(result.suggestedAmount).toLocaleString("uz-UZ")} so'm taklif qildi.\n` +
+        "Davom etishdan oldin taklif qilingan summani tasdiqlang.",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ Shu summada davom etish", callback_data: "userbot:tolov-confirm", style: "success" },
+          { text: "❌ Bekor qilish", callback_data: "userbot:tolov-cancel", style: "danger" },
+        ]],
+      },
+    };
+  }
+  if (result.status === "created" || result.status === "existing") {
+    const payment = result.payment;
+    const expiresAt = new Date(payment.expiresAt);
+    return {
+      text: `💳 To'lovni 5 daqiqa ichida amalga oshiring.\n\n` +
+        `Karta: ${payment.cardNumber}\n` +
+        `Summa: ${Number(payment.amount).toLocaleString("uz-UZ")} so'm\n` +
+        `Amal qilish muddati: ${expiresAt.toLocaleTimeString("uz-UZ", { timeZone: "Asia/Tashkent" })}\n\n` +
+        "To'lov tasdiqlangach, balans yoki Premium avtomatik yangilanadi.",
+      reply_markup: {
+        inline_keyboard: [[{
+          text: "❌ To'lovni bekor qilish",
+          callback_data: "userbot:tolov-cancel",
+          style: "danger",
+        }]],
+      },
+    };
+  }
+  if (result.status === "pending") {
+    return {
+      text: `To'lov hali kutilmoqda: ${Number(result.payment.amount).toLocaleString("uz-UZ")} so'm.`,
+      reply_markup: {
+        inline_keyboard: [[{
+          text: "❌ To'lovni bekor qilish",
+          callback_data: "userbot:tolov-cancel",
+          style: "danger",
+        }]],
+      },
+    };
+  }
+  if (["cancelled", "cancel", "expired"].includes(result.status)) {
+    return { text: "To'lov bekor qilindi. Istasangiz, yangidan boshlang." };
+  }
+  return { text: "Hozircha kutayotgan TolovAPI to'lovi yo'q." };
+}
 
 const EMPTY_SCHEDULE = Object.freeze({
   message: "",
@@ -171,6 +280,7 @@ function registerUserSchedulerSession(bot, options) {
     encryptSecret,
     decryptSecret,
     publicApiBaseUrl,
+    tolovPayments,
   } = options;
   const makeTelegramClient = options.createTelegramClient || createTelegramClient;
   const ownerId = doc.ownerId;
@@ -268,7 +378,9 @@ function registerUserSchedulerSession(bot, options) {
           text: doc.premium ? "⭐ Premium faol" : "⭐ Premium tarif",
           callback_data: "premium:show",
           style: "primary",
-        }],
+        }, ...(tolovPayments?.isConfigured()
+          ? [{ text: "💳 Balansni to'ldirish", callback_data: "userbot:balance", style: "success" }]
+          : [])],
         [{
           text: "▶️ Ko'rib chiqish va boshlash",
           callback_data: "userbot:preview",
@@ -1638,6 +1750,11 @@ function registerUserSchedulerSession(bot, options) {
     await stopRuntime();
   }
 
+  async function replyAutoPayment(ctx, result) {
+    const reply = getTolovPaymentReply(result);
+    await ctx.reply(reply.text, reply.reply_markup ? { reply_markup: reply.reply_markup } : {});
+  }
+
   async function cancelPending() {
     const mode = inputModes.get(ownerId);
     const hadPending = Boolean(mode || (loginAttempt && !loginAttempt.closed));
@@ -1678,6 +1795,28 @@ function registerUserSchedulerSession(bot, options) {
             : "⭐ Premium tarif\nBepul: 20 chat va 10 daqiqa interval.\nPremium: cheksiz chat, 10 soniya interval va reklamasiz xabarlar.",
           { reply_markup: panelKeyboard() },
         );
+      } else if (action === "balance") {
+        if (!tolovPayments?.isConfigured()) {
+          await ctx.reply("Avto to'lov hozircha sozlanmagan. Bot egasi server sozlamalarini tekshirishi kerak.");
+          return;
+        }
+        inputModes.set(ownerId, { type: "balance-topup" });
+        await ctx.reply(
+          "Balansga qo'shmoqchi bo'lgan summangizni so'mda yuboring (faqat butun son).\n/cancel — bekor qilish.",
+          {
+            reply_markup: {
+              inline_keyboard: [[{
+                text: "Bekor qilish",
+                callback_data: "userbot:cancel-input",
+                style: "danger",
+              }]],
+            },
+          },
+        );
+      } else if (action === "tolov-confirm") {
+        await replyAutoPayment(ctx, await tolovPayments.confirm(ownerId));
+      } else if (action === "tolov-cancel") {
+        await replyAutoPayment(ctx, await tolovPayments.cancel(ownerId));
       } else if (action === "connect") {
         await ctx.reply(
           "Mini App uchun ommaviy HTTPS manzili kerak. Render’da RENDER_EXTERNAL_URL avtomatik ishlatiladi; boshqa hostingda PUBLIC_API_URL sozlang.",
@@ -2030,6 +2169,15 @@ function registerUserSchedulerSession(bot, options) {
           throw new Error("Bepul tarifda eng qisqa interval 10 daqiqa. Premium bilan 10 soniya.");
         }
         await saveSchedule({ intervalSeconds, enabled: false, nextRunAt: null });
+      } else if (mode.type === "balance-topup") {
+        const amount = Number(value.replace(/\s/g, ""));
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+          throw new Error("Summani musbat butun so'mda yuboring.");
+        }
+        const result = await tolovPayments.create(ownerId, { purpose: "balance", amount });
+        inputModes.delete(ownerId);
+        await replyAutoPayment(ctx, result);
+        return;
       } else {
         return;
       }
@@ -2054,6 +2202,7 @@ function registerUserSchedulerSession(bot, options) {
 
 function registerUserScheduler(bot, options) {
   const { doc, Bots, UserSchedulerUsers } = options;
+  const decryptSecret = options.decryptSecret;
   const createSessionBot = options.createSessionBot ||
     ((token, botOptions) => new BotConstructor(token, {
       ...botOptions,
@@ -2063,6 +2212,37 @@ function registerUserScheduler(bot, options) {
   const pendingSessions = new Map();
   let migrationPromise = null;
   let stopping = false;
+  const tolovApi = options.tolovApi || createTolovApi({
+    getCredentials: () => {
+      const settings = doc.premiumSettings?.tolovApi || {};
+      if (!settings.shopKeyEncrypted) {
+        return { shopId: settings.shopId, shopKey: "" };
+      }
+      if (typeof decryptSecret !== "function") {
+        throw new Error("TolovAPI kalitini ochish uchun shifrlash konfiguratsiyasi mavjud emas.");
+      }
+      return {
+        shopId: settings.shopId,
+        shopKey: decryptSecret(settings.shopKeyEncrypted),
+      };
+    },
+    isConfigured: () => Boolean(
+      doc.premiumSettings?.tolovApi?.shopId &&
+      doc.premiumSettings?.tolovApi?.shopKeyEncrypted
+    ),
+  });
+  const tolovPayments = options.tolovPayments || createTolovPaymentService({
+    botId: doc._id,
+    UserSchedulerUsers,
+    api: tolovApi,
+    notifyUser: (userId, text) => bot.sendMessage(userId, text),
+    onPaymentApplied: async (userId, user) => {
+      const runtime = sessions.get(userId);
+      if (!runtime || !user) return;
+      runtime.doc.balance = Number(user.balance) || 0;
+      runtime.doc.premium = Boolean(user.premiumUntil && new Date(user.premiumUntil) > new Date());
+    },
+  });
 
   async function migrateLegacyOwnerSession() {
     if (migrationPromise) return migrationPromise;
@@ -2161,8 +2341,9 @@ function registerUserScheduler(bot, options) {
       ...options,
       doc: sessionDoc,
       Bots: sessionCollection,
+      tolovPayments,
     });
-    const entry = { bot: userBot, controls };
+    const entry = { bot: userBot, controls, doc: sessionDoc };
     try {
       if (startRuntime) await controls.start();
     } catch (error) {
@@ -2216,6 +2397,7 @@ function registerUserScheduler(bot, options) {
         3: Number(stars[3]) || 250,
         12: Number(stars[12]) || 800,
       },
+      tolovApiPrices: getTolovPremiumPrices(settings),
     };
   }
 
@@ -2229,6 +2411,7 @@ function registerUserScheduler(bot, options) {
     return {
       active: Boolean(premiumUntil && premiumUntil > new Date()),
       premiumUntil,
+      balance: Number(record.balance) || 0,
     };
   }
 
@@ -2251,7 +2434,8 @@ function registerUserScheduler(bot, options) {
         `• Akkauntlar: ko'p\n` +
         `• Premium emoji, rasm, video va fayllar\n` +
         `• Xabarda reklama yo'q\n\n` +
-        `Holatingiz: ${statusText}`,
+        `Holatingiz: ${statusText}\n` +
+        `Balans: ${status.balance.toLocaleString("uz-UZ")} so'm`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -2260,6 +2444,10 @@ function registerUserScheduler(bot, options) {
               { text: `3 oy — ⭐ ${premiumSettings.stars[3]}`, callback_data: "premium:buy:3", style: "primary" },
               { text: `12 oy — ⭐ ${premiumSettings.stars[12]}`, callback_data: "premium:buy:12", style: "primary" },
             ],
+            ...(tolovPayments.isConfigured()
+              ? [[{ text: "💳 TolovAPI orqali to'lash", callback_data: "premium:autopay", style: "success" }]]
+              : []),
+            [[{ text: "💰 Balansdan Premium olish", callback_data: "premium:balance", style: "primary" }]],
             [
               { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
               { text: "📨 To'lov tarixi", callback_data: "premium:history", style: "primary" },
@@ -2293,7 +2481,7 @@ function registerUserScheduler(bot, options) {
 
   bot.command("start", dispatchUpdate);
   bot.onCallbackData(/^userbot:(.+)$/, dispatchUpdate);
-  bot.onCallbackData(/^premium:(show|mine|history|duration)$/, async (ctx, match) => {
+  bot.onCallbackData(/^premium:(show|mine|history|duration|autopay|balance)$/, async (ctx, match) => {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     const action = match[1];
@@ -2316,10 +2504,49 @@ function registerUserScheduler(bot, options) {
       const history = Array.isArray(record.premiumHistory) ? record.premiumHistory : [];
       const lines = history.length
         ? history.slice(-10).reverse().map((item) =>
-            `${new Date(item.paidAt).toLocaleDateString("uz-UZ")} — ${item.plan}`,
+            `${new Date(item.paidAt).toLocaleDateString("uz-UZ")} — ${item.plan}` +
+              (item.method === "tolovapi"
+                ? " (TolovAPI)"
+                : item.method === "balance"
+                  ? " (balans)"
+                  : " (Stars)"),
           ).join("\n")
         : "To'lovlar topilmadi.";
       await ctx.reply(`📨 Premium to'lov tarixi\n\n${lines}`);
+      return;
+    }
+    if (action === "autopay") {
+      if (!tolovPayments.isConfigured()) {
+        await ctx.reply("TolovAPI hozircha sozlanmagan. Bot egasi server sozlamalarini tekshirishi kerak.");
+        return;
+      }
+      const { tolovApiPrices } = getPremiumSettings();
+      await ctx.reply("TolovAPI orqali Premium muddatini tanlang:", {
+        reply_markup: {
+          inline_keyboard: [1, 3, 12].map((months) => [{
+            text: `${PREMIUM_PLANS[months].label} — ${tolovApiPrices[months].toLocaleString("uz-UZ")} so'm`,
+            callback_data: `premium:autobuy:${months}`,
+            style: "primary",
+          }]),
+        },
+      });
+      return;
+    }
+    if (action === "balance") {
+      const status = await getPremiumStatus(ctx.from.id);
+      const { tolovApiPrices } = getPremiumSettings();
+      await ctx.reply(
+        `Balans: ${status.balance.toLocaleString("uz-UZ")} so'm\nBalansdan Premium muddatini tanlang:`,
+        {
+          reply_markup: {
+            inline_keyboard: [1, 3, 12].map((months) => [{
+              text: `${PREMIUM_PLANS[months].label} — ${tolovApiPrices[months].toLocaleString("uz-UZ")} so'm`,
+              callback_data: `premium:balance:${months}`,
+              style: "primary",
+            }]),
+          },
+        },
+      );
       return;
     }
     if (action === "duration") {
@@ -2341,6 +2568,77 @@ function registerUserScheduler(bot, options) {
     await ctx.answer();
     if (ctx.chat?.type !== "private") return;
     await sendPremiumInvoice(ctx, Number(match[1]));
+  });
+
+  bot.onCallbackData(/^premium:autobuy:(1|3|12)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.chat?.type !== "private") return;
+    const months = Number(match[1]);
+    const amount = getPremiumSettings().tolovApiPrices[months];
+    try {
+      const result = await tolovPayments.create(ctx.from.id, {
+        purpose: "premium",
+        amount,
+        months,
+      });
+      const reply = getTolovPaymentReply(result);
+      await ctx.reply(reply.text, reply.reply_markup ? { reply_markup: reply.reply_markup } : {});
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} TolovAPI Premium to'lovini yarata olmadi:`, error.message);
+      await ctx.reply(`TolovAPI to'lovini yaratib bo'lmadi: ${error.message}`);
+    }
+  });
+
+  bot.onCallbackData(/^premium:balance:(1|3|12)$/, async (ctx, match) => {
+    await ctx.answer();
+    if (ctx.chat?.type !== "private") return;
+    const months = Number(match[1]);
+    const plan = PREMIUM_PLANS[months];
+    const prices = getPremiumSettings().tolovApiPrices;
+    try {
+      const result = await purchasePremiumWithBalance({
+        UserSchedulerUsers,
+        botId: doc._id,
+        userId: ctx.from.id,
+        months,
+        prices,
+      });
+      if (result.status === "insufficient") {
+        const topupButton = tolovPayments.isConfigured()
+          ? {
+              text: "💳 Balansni TolovAPI orqali to'ldirish",
+              callback_data: "userbot:balance",
+              style: "success",
+            }
+          : {
+              text: "⭐ Premium tarifini ko'rish",
+              callback_data: "premium:show",
+              style: "primary",
+            };
+        await ctx.reply(
+          `Balansingizda mablag' yetarli emas. Kerak: ${result.amount.toLocaleString("uz-UZ")} so'm; ` +
+            `mavjud: ${result.currentBalance.toLocaleString("uz-UZ")} so'm.`,
+          {
+            reply_markup: {
+              inline_keyboard: [[topupButton]],
+            },
+          },
+        );
+        return;
+      }
+      const runtime = sessions.get(ctx.from.id);
+      if (runtime && result.user) {
+        runtime.doc.balance = Number(result.user.balance) || 0;
+        runtime.doc.premium = true;
+      }
+      await ctx.reply(
+        `Balansdan ${result.amount.toLocaleString("uz-UZ")} so'm yechildi.\n` +
+          `${plan.label} Premium ${result.premiumUntil.toLocaleDateString("uz-UZ")} gacha faollashtirildi.`,
+      );
+    } catch (error) {
+      console.error(`User scheduler ${doc._id} balansdan Premium xaridini bajara olmadi:`, error.message);
+      await ctx.reply(`Premium xaridini bajarib bo'lmadi: ${error.message}`);
+    }
   });
 
   bot.onUpdate("pre_checkout_query", async (ctx) => {
@@ -2392,6 +2690,12 @@ function registerUserScheduler(bot, options) {
         $unset: { pendingPremiumPayload: "" },
       },
     );
+    const updatedUser = await UserSchedulerUsers.findOne({ botId: doc._id, userId: ctx.from.id });
+    const runtime = sessions.get(ctx.from.id);
+    if (runtime && updatedUser) {
+      runtime.doc.balance = Number(updatedUser.balance) || 0;
+      runtime.doc.premium = true;
+    }
     await ctx.reply(
       `⭐ PREMIUM FAOLLASHTIRILDI\n` +
         `Muddat: ${plan.label}\n` +
@@ -2403,6 +2707,7 @@ function registerUserScheduler(bot, options) {
 
   async function start() {
     await migrateLegacyOwnerSession();
+    await tolovPayments.resume();
     const activeRecords = await UserSchedulerUsers.find({
       botId: doc._id,
       "userSchedule.enabled": true,
@@ -2426,6 +2731,7 @@ function registerUserScheduler(bot, options) {
 
   async function stop() {
     stopping = true;
+    tolovPayments.stop();
     await Promise.all([...pendingSessions.values()].map((pending) => pending.catch(() => {})));
     const entries = [...sessions.values()];
     sessions.clear();
@@ -2443,6 +2749,7 @@ function registerUserScheduler(bot, options) {
   }
 
   async function deleteRuntime() {
+    tolovPayments.stop();
     await migrateLegacyOwnerSession();
     const records = await UserSchedulerUsers.find({ botId: doc._id }).toArray();
     const userIds = new Set([
@@ -2491,6 +2798,7 @@ module.exports = Object.assign(registerUserScheduler, {
   getDialogKind,
   normalizePhoneNumber,
   parseInterval,
+  purchasePremiumWithBalance,
   registerUserScheduler,
   validateWebAppInitData,
 });

@@ -197,6 +197,7 @@ async function buildChild(doc) {
     Bots,
     Subs,
     UserSchedulerUsers,
+    encryptSecret: encrypt,
     onCancel: templateControls?.cancelPending,
   });
   return child;
