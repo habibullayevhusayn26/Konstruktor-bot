@@ -195,7 +195,7 @@ function registerSubscriptionGate(bot, { doc, Subs }) {
   });
 }
 
-function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel, onAutoPaymentStart, onAutoPaymentStop, onAutoPaymentStatus }) {
+function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, publicApiBaseUrl, onCancel, onAutoPaymentStart, onAutoPaymentStop, onAutoPaymentStatus }) {
   let pendingAction = null;
   let broadcastDraft = null;
   const isOwner = (ctx) => ctx.from?.id === doc.ownerId;
@@ -539,7 +539,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
   });
 
-  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:(stars|card|owner)|premium-card-prices|premium-card-bots|premium-auto-on|premium-auto-off|channel:off|channel:remove:\d+)$/, async (ctx) => {
+  bot.onCallbackData(/^admin:(stats|welcome|broadcast|channel|premium|premium:(stars|card|owner)|premium:auto-account|premium-card-prices|premium-card-bots|premium-auto-on|premium-auto-off|channel:off|channel:remove:\d+)$/, async (ctx) => {
     await ctx.answer();
     if (!isOwner(ctx)) return;
 
@@ -561,6 +561,27 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
     }
 
     switch (ctx.text) {
+      case "admin:premium:auto-account":
+        if (!publicApiBaseUrl) {
+          await ctx.reply("Avtotolov uchun avval serverda PUBLIC_API_URL yoki RENDER_EXTERNAL_URL sozlanishi kerak.");
+          return;
+        }
+        let appUrl;
+        try {
+          appUrl = new URL(publicApiBaseUrl);
+          appUrl.pathname = `${appUrl.pathname.replace(/\/+$/, "")}/user-scheduler/app/${doc._id}`;
+        } catch {
+          await ctx.reply("Mini App manzili noto'g'ri sozlangan.");
+          return;
+        }
+        await ctx.reply("Telegram admin akkauntini xavfsiz ulash uchun Mini Appni oching:", {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🔐 Akkauntni ulash", web_app: { url: appUrl.toString() }, style: "primary" },
+            ]],
+          },
+        });
+        return;
       case "admin:premium-card-bots":
         pendingAction = "premium-card-bots";
         await ctx.reply("Avtotolovni tekshiradigan bot username larini vergul bilan yuboring:\nMasalan: HumoCardBot, CardXabarBot");
@@ -568,6 +589,11 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
       case "admin:premium-auto-on":
         if (!premiumSettingsReady(doc)) {
           await ctx.reply("Avtotolovni yoqish uchun avval Premium karta raqamini sozlang.");
+          return;
+        }
+        const started = await onAutoPaymentStart?.();
+        if (!started) {
+          await ctx.reply("Avtotolovni yoqish uchun avval «Admin Telegram akkauntini ulash» tugmasidan admin akkauntini ulang.");
           return;
         }
         doc.premiumSettings = { ...(doc.premiumSettings || {}), autoPaymentEnabled: true };
@@ -641,6 +667,7 @@ function registerAdminPanel(bot, { doc, Bots, Subs, UserSchedulerUsers, onCancel
                 [{ text: "👤 Karta egasini sozlash", callback_data: "admin:premium:owner" }],
                 [{ text: "💵 Karta narxlarini sozlash", callback_data: "admin:premium-card-prices" }],
                 [{ text: "🤖 Avtotolov botlarini sozlash", callback_data: "admin:premium-card-bots" }],
+                [{ text: "🔐 Admin Telegram akkauntini ulash", callback_data: "admin:premium:auto-account" }],
                 [{
                   text: premiumSettings.autoPaymentEnabled ? "🛑 Avtotolovni to'xtatish" : "▶️ Avtotolovni yoqish",
                   callback_data: premiumSettings.autoPaymentEnabled ? "admin:premium-auto-off" : "admin:premium-auto-on",

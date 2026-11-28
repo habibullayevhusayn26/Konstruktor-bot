@@ -209,7 +209,18 @@ test("User Bot supports automatic card payment monitoring and admin controls", (
   assert.match(adminPanel, /Avtotolov botlarini sozlash/);
 });
 
-test("User Bot card Premium purchase stores receipt and admin approval flow", () => {
+test("Premium admin can link admin Telegram account from admin panel", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const adminPanel = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "admin-panel.js"),
+    "utf8",
+  );
+  assert.match(adminPanel, /Admin Telegram akkauntini ulash/);
+  assert.match(adminPanel, /admin:premium:auto-account/);
+});
+
+test("User Bot card Premium purchase uses automatic payment monitoring", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const userScheduler = fs.readFileSync(
@@ -218,8 +229,10 @@ test("User Bot card Premium purchase stores receipt and admin approval flow", ()
   );
   assert.match(userScheduler, /premium:card:\(1\|3\|12\)/);
   assert.match(userScheduler, /pendingCardPremium/);
-  assert.match(userScheduler, /premium_card:ok/);
-  assert.match(userScheduler, /premium_card:no/);
+  assert.match(userScheduler, /HumoCardBot/);
+  assert.match(userScheduler, /CardXabarBot/);
+  assert.doesNotMatch(userScheduler, /premium_card:ok/);
+  assert.doesNotMatch(userScheduler, /premium_card:no/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_NUMBER/);
   assert.match(userScheduler, /USERBOT_PREMIUM_CARD_OWNER/);
 });
@@ -236,6 +249,19 @@ test("User Bot admin can configure card and Stars Premium settings", () => {
   assert.match(adminPanel, /premium-card-number/);
   assert.match(adminPanel, /premium-card-owner/);
   assert.match(adminPanel, /premium-card-prices/);
+});
+
+test("media caption fallback includes footer in the original media message", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "bots", "user-scheduler.js"),
+    "utf8",
+  );
+  assert.match(source, /userClient\.sendFile\(target/);
+  assert.match(source, /caption: captionParams\.message/);
+  assert.doesNotMatch(source, /premium_card:ok/);
+  assert.doesNotMatch(source, /premium_card:no/);
 });
 
 test("preview shows the exact text before activation without sending to target chats", async () => {
