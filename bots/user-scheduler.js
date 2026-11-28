@@ -2461,7 +2461,7 @@ function registerUserScheduler(bot, options) {
             ...(tolovPayments.isConfigured()
               ? [[{ text: "💳 TolovAPI orqali to'lash", callback_data: "premium:autopay", style: "success" }]]
               : []),
-            [[{ text: "💰 Balansdan Premium olish", callback_data: "premium:balance", style: "primary" }]],
+            [{ text: "💰 Balansdan Premium olish", callback_data: "premium:balance", style: "primary" }],
             [
               { text: "📋 Mening tarifim", callback_data: "premium:mine", style: "primary" },
               { text: "📨 To'lov tarixi", callback_data: "premium:history", style: "primary" },

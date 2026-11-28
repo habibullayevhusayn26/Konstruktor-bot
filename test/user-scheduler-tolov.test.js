@@ -526,6 +526,44 @@ test("User Bot Premium menu creates a TolovAPI payment using the admin price", a
   }
 });
 
+test("Premium tariff menu sends valid inline keyboard button objects", async () => {
+  const store = createPaymentStore();
+  const bot = new BotConstructor("test-token");
+  const sent = [];
+  bot.api = async (method, payload) => {
+    sent.push({ method, payload });
+    return { message_id: sent.length };
+  };
+  const runtime = registerUserScheduler(bot, {
+    doc: { _id: 88, ownerId: 77, username: "test_user_bot" },
+    Bots: { updateOne: async () => ({ matchedCount: 1 }) },
+    UserSchedulerUsers: store.collection,
+    tolovApi: { isConfigured: () => true },
+  });
+
+  try {
+    await bot.processUpdate({
+      callback_query: {
+        id: "show-premium",
+        from: { id: 77 },
+        message: { chat: { id: 77, type: "private" }, message_id: 1 },
+        data: "premium:show",
+      },
+    });
+
+    const keyboard = sent.find(({ method, payload }) =>
+      method === "sendMessage" && payload.text.includes("PREMIUM TARIF"),
+    ).payload.reply_markup.inline_keyboard;
+    assert.ok(keyboard.every((row) =>
+      Array.isArray(row) &&
+      row.every((button) => button && typeof button === "object" && !Array.isArray(button)),
+    ));
+    assert.equal(keyboard[2][0].callback_data, "premium:balance");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("User Bot balance button accepts a top-up amount and creates its payment", async () => {
   const store = createPaymentStore();
   const bot = new BotConstructor("test-token");
